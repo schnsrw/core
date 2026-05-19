@@ -13,6 +13,7 @@ categories.workspace = true
 [dependencies]
 s1-model = { workspace = true }
 s1-ops = { workspace = true }
+s1-ooxml = { workspace = true }
 thiserror = { workspace = true }
 
 # Feature-gated format crates

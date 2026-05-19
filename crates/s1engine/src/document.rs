@@ -15,6 +15,10 @@ use crate::format::Format;
 pub struct Document {
     model: DocumentModel,
     history: History,
+    /// Lossless preservation of the original input — kept after `open` so
+    /// `export(Docx)` can round-trip the file byte-equivalently when no
+    /// edits have happened. Cleared the moment any mutation runs.
+    preservation: Option<s1_ooxml::Package>,
 }
 
 impl Document {
@@ -23,6 +27,7 @@ impl Document {
         Self {
             model: DocumentModel::new(),
             history: History::new(),
+            preservation: None,
         }
     }
 
@@ -31,7 +36,41 @@ impl Document {
         Self {
             model,
             history: History::new(),
+            preservation: None,
         }
+    }
+
+    /// Create a Document from a model **plus** the lossless OOXML package it
+    /// came from. The package is held as preservation metadata: if no edits
+    /// happen between this call and the next `export(Docx)`, the package is
+    /// re-serialised verbatim, preserving every tag that `DocumentModel`
+    /// would otherwise drop.
+    pub fn from_model_with_package(model: DocumentModel, package: s1_ooxml::Package) -> Self {
+        Self {
+            model,
+            history: History::new(),
+            preservation: Some(package),
+        }
+    }
+
+    /// `true` if the document still has its original preservation package
+    /// (i.e. no mutation has happened since it was opened).
+    pub fn has_preservation(&self) -> bool {
+        self.preservation.is_some()
+    }
+
+    /// Drop the preservation package. Called automatically whenever the
+    /// document is mutated through the engine API; exposed publicly so
+    /// callers that bypass the engine API (via `model_mut` etc.) can
+    /// signal the same.
+    pub fn invalidate_preservation(&mut self) {
+        self.preservation = None;
+    }
+
+    /// Borrow the preservation package, if any. Mainly for tests and
+    /// diagnostics; production code should go through `export`.
+    pub fn preservation(&self) -> Option<&s1_ooxml::Package> {
+        self.preservation.as_ref()
     }
 
     // ─── Model access ────────────────────────────────────────────────
@@ -57,6 +96,7 @@ impl Document {
     /// This method exists for cases where you need direct model access
     /// (e.g., bulk import, format reader integration, or testing).
     pub fn model_mut(&mut self) -> &mut DocumentModel {
+        self.preservation = None;
         &mut self.model
     }
 
@@ -74,6 +114,7 @@ impl Document {
 
     /// Get mutable document metadata.
     pub fn metadata_mut(&mut self) -> &mut DocumentMetadata {
+        self.preservation = None;
         self.model.metadata_mut()
     }
 
@@ -173,6 +214,7 @@ impl Document {
     /// On success, the transaction is pushed onto the undo stack.
     /// On failure, all operations are rolled back.
     pub fn apply_transaction(&mut self, txn: &Transaction) -> Result<(), Error> {
+        self.preservation = None;
         self.history.apply(&mut self.model, txn)?;
         Ok(())
     }
@@ -188,11 +230,13 @@ impl Document {
 
     /// Undo the last transaction. Returns `true` if something was undone.
     pub fn undo(&mut self) -> Result<bool, Error> {
+        self.preservation = None;
         Ok(self.history.undo(&mut self.model)?)
     }
 
     /// Redo the last undone transaction. Returns `true` if something was redone.
     pub fn redo(&mut self) -> Result<bool, Error> {
+        self.preservation = None;
         Ok(self.history.redo(&mut self.model)?)
     }
 
@@ -208,6 +252,8 @@ impl Document {
 
     /// Clear all undo/redo history.
     pub fn clear_history(&mut self) {
+        // History clear doesn't mutate the model, so preservation is safe
+        // to keep. Left here for symmetry with other history-related methods.
         self.history.clear();
     }
 
@@ -238,6 +284,9 @@ impl Document {
     /// paragraphs inside each TOC node. Call this before exporting if
     /// content has changed since the TOC was inserted.
     pub fn update_toc(&mut self) {
+        // TOC update rewrites cached entry paragraphs — that's a model
+        // mutation, drop preservation.
+        self.preservation = None;
         // First, find all TOC nodes and their max_level
         let body_id = match self.model.body_id() {
             Some(id) => id,
@@ -559,10 +608,22 @@ impl Document {
     // ─── Export ──────────────────────────────────────────────────────
 
     /// Export the document to bytes in the given format.
+    ///
+    /// For DOCX, if the document was opened from bytes and **has not been
+    /// mutated since**, the original preservation package is re-emitted
+    /// verbatim — no information is lost. After any mutation the export
+    /// falls back to building bytes from the model.
     pub fn export(&self, format: Format) -> Result<Vec<u8>, Error> {
         match format {
             #[cfg(feature = "docx")]
-            Format::Docx => Ok(s1_format_docx::write(&self.model)?),
+            Format::Docx => {
+                if let Some(pkg) = &self.preservation {
+                    return Ok(pkg
+                        .write()
+                        .map_err(|e| Error::Format(format!("ooxml package write: {e}")))?);
+                }
+                Ok(s1_format_docx::write(&self.model)?)
+            }
             #[cfg(feature = "odt")]
             Format::Odt => Ok(s1_format_odt::write(&self.model)?),
             #[cfg(feature = "txt")]

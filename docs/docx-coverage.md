@@ -134,6 +134,49 @@ Fixtures total : 39
 preservation hypothesis from [`ooxml-design.md`](ooxml-design.md) is
 empirically confirmed.
 
-Bucket A (140 → 0) closes the moment `s1-format-docx`'s read/write path
-sits on top of `s1-ooxml::Package` instead of building `s1-model`
-directly from quick-xml. That refactor is the next milestone.
+## Update — preservation wired through `s1engine`
+
+`s1engine::Document` now holds an `Option<s1_ooxml::Package>` as
+preservation metadata, populated by `Engine::open(Format::Docx)`. Any
+mutation (`apply`, `apply_transaction`, `undo`, `redo`, `update_toc`,
+`model_mut`, `metadata_mut`) drops it. `Document::export(Format::Docx)`
+re-emits the package verbatim while preservation is intact, and falls
+back to the model-based writer once an edit invalidates it.
+
+Re-running the engine-level coverage audit on the same 39-fixture set:
+
+```
+═══ DOCX coverage report ═══
+Fixtures total : 39
+  parsed       : 39
+  re-written   : 39
+  zero-drop    : 39 / 39   ← was 10 / 39 last week
+
+Bucket A — consumer supports, WE DROP  : 0 tags   ← was 140
+Bucket B — WE support, consumer drops  : 22 tags  ← was 0
+Bucket C — neither supports             : 0 tags   ← was 22
+```
+
+**The integration-blocking gap (Bucket A) is closed for the converter
+use case.** Casual Core now leads the consumer on 22 tag families that
+the consumer's own audit lists as parse-but-drop — those are wins
+Casual Editor inherits the moment it switches its file-open path to
+`@schnsrw/core`.
+
+### What this enables for the consumer
+
+| Path | Before | After |
+| --- | --- | --- |
+| Open DOCX → save DOCX (no edits) | Lossy | **Zero-drop** |
+| Open DOCX → save PDF / MD / TXT / ODT | Lossy | Same (downstream conversions) |
+| Open DOCX → edit → save DOCX | Lossy | Lossy (preservation drops on edit — Phase 2 work) |
+
+The "no edits" path is the **converter** use case — it's now production-quality.
+
+### What's still ahead
+
+The "with edits" path still falls back to the model-based writer once any
+mutation runs, which means edits to a DOCX containing unknown tags will
+still lose those tags on save. Closing that gap is the next milestone:
+extend `s1-ooxml::Package` with an edit-aware API that lets `s1-format-docx`
+patch the projected subtree while leaving unknown OOXML alone.

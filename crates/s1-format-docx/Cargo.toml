@@ -16,6 +16,7 @@ crypto = ["ring", "x509-cert"]
 
 [dependencies]
 s1-model = { workspace = true }
+s1-ooxml = { workspace = true }
 quick-xml = { workspace = true }
 zip = { workspace = true }
 base64 = { workspace = true }

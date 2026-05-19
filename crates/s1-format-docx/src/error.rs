@@ -35,3 +35,9 @@ impl From<std::io::Error> for DocxError {
         Self::Zip(e.to_string())
     }
 }
+
+impl From<s1_ooxml::OoxmlError> for DocxError {
+    fn from(e: s1_ooxml::OoxmlError) -> Self {
+        Self::InvalidStructure(e.to_string())
+    }
+}

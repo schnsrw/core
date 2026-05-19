@@ -32,6 +32,28 @@ use crate::xml_util::get_attr;
 /// - `word/_rels/document.xml.rels` — relationships (for images, etc.)
 /// - `word/media/*` — embedded media files
 pub fn read(input: &[u8]) -> Result<DocumentModel, DocxError> {
+    let (model, _) = read_with_package(input)?;
+    Ok(model)
+}
+
+/// Read a DOCX and **also** return the full preservation package.
+///
+/// The returned [`s1_ooxml::Package`] holds every part of the source file —
+/// XML and binary — in a lossless tree. Consumers that need
+/// round-trip-without-edits fidelity (the converter use case) keep this
+/// `Package` and re-emit it via [`s1_ooxml::Package::write`] instead of
+/// regenerating bytes from the projected [`DocumentModel`].
+///
+/// Both passes (model + package) run from the same input bytes. Today they
+/// parse independently; future work will refactor the model projection on
+/// top of the package to make this single-pass.
+pub fn read_with_package(input: &[u8]) -> Result<(DocumentModel, s1_ooxml::Package), DocxError> {
+    let model = read_model_internal(input)?;
+    let package = s1_ooxml::Package::parse(input)?;
+    Ok((model, package))
+}
+
+fn read_model_internal(input: &[u8]) -> Result<DocumentModel, DocxError> {
     let cursor = Cursor::new(input);
     let mut archive = ZipArchive::new(cursor)?;
 
