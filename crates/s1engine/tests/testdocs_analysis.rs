@@ -301,7 +301,7 @@ fn analyze_all_testdocs() {
                     let prev_bb: f64 = page.blocks[..bi]
                         .iter()
                         .map(|b| b.bounds.y + b.bounds.height)
-                        .last()
+                        .next_back()
                         .unwrap_or(0.0);
                     block.bounds.y + 1.0 < prev_bb
                 };

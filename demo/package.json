@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@schnsrw/core": "workspace:*"
+    "@schnsrw/core": "file:../js"
   },
   "devDependencies": {
     "typescript": "^5",

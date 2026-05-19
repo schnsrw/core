@@ -460,7 +460,7 @@ mod tests {
     fn system_fonts_loaded() {
         let db = FontDatabase::new();
         // On any modern OS, there should be system fonts
-        assert!(db.len() > 0, "no system fonts found");
+        assert!(!db.is_empty(), "no system fonts found");
     }
 
     #[test]
@@ -538,7 +538,7 @@ mod tests {
         // If Calibri itself exists, that's fine too; we just need a result
         // On CI/systems without fonts, substitution may not find anything;
         // only assert if the system has at least some fonts loaded.
-        if db.len() > 0 {
+        if !db.is_empty() {
             assert!(
                 id.is_some() || db.find("Calibri", false, false).is_some(),
                 "substitution should find an alternative for Calibri when fonts are available"
@@ -569,7 +569,10 @@ mod tests {
     #[test]
     fn embedded_font_loads() {
         let db = FontDatabase::with_embedded_fallback();
-        assert!(db.len() > 0, "embedded font should load at least one face");
+        assert!(
+            !db.is_empty(),
+            "embedded font should load at least one face"
+        );
     }
 
     #[cfg(feature = "embedded-font")]

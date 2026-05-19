@@ -4913,7 +4913,7 @@ mod tests {
                 doc.insert_node(
                     run_id,
                     0,
-                    Node::text(text_id, &format!("R{row_idx}C{col_idx}")),
+                    Node::text(text_id, format!("R{row_idx}C{col_idx}")),
                 )
                 .unwrap();
             }
@@ -6160,7 +6160,7 @@ mod tests {
                 doc.insert_node(
                     run_id,
                     0,
-                    Node::text(text_id, &format!("R{}C{}", row_idx, col_idx)),
+                    Node::text(text_id, format!("R{}C{}", row_idx, col_idx)),
                 )
                 .unwrap();
             }
@@ -6462,32 +6462,29 @@ mod tests {
 
         // All rows across all chunks should have consistent cell count (4 columns)
         for (block_idx, block) in table_blocks.iter().enumerate() {
-            match &block.kind {
-                LayoutBlockKind::Table { rows, .. } => {
-                    for (row_idx, row) in rows.iter().enumerate() {
-                        assert_eq!(
-                            row.cells.len(),
-                            4,
-                            "block {} row {} should have 4 cells",
+            if let LayoutBlockKind::Table { rows, .. } = &block.kind {
+                for (row_idx, row) in rows.iter().enumerate() {
+                    assert_eq!(
+                        row.cells.len(),
+                        4,
+                        "block {} row {} should have 4 cells",
+                        block_idx,
+                        row_idx
+                    );
+                    // Verify cell widths are equal (total width / 4 columns)
+                    let expected_cell_width = first_width / 4.0;
+                    for (cell_idx, cell) in row.cells.iter().enumerate() {
+                        assert!(
+                            (cell.bounds.width - expected_cell_width).abs() < 0.01,
+                            "block {} row {} cell {} width mismatch: {} vs {}",
                             block_idx,
-                            row_idx
+                            row_idx,
+                            cell_idx,
+                            cell.bounds.width,
+                            expected_cell_width
                         );
-                        // Verify cell widths are equal (total width / 4 columns)
-                        let expected_cell_width = first_width / 4.0;
-                        for (cell_idx, cell) in row.cells.iter().enumerate() {
-                            assert!(
-                                (cell.bounds.width - expected_cell_width).abs() < 0.01,
-                                "block {} row {} cell {} width mismatch: {} vs {}",
-                                block_idx,
-                                row_idx,
-                                cell_idx,
-                                cell.bounds.width,
-                                expected_cell_width
-                            );
-                        }
                     }
                 }
-                _ => {}
             }
         }
     }

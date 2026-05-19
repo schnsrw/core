@@ -14,3 +14,6 @@ categories.workspace = true
 s1-model = { workspace = true }
 pulldown-cmark = "0.12"
 thiserror = { workspace = true }
+
+[lints]
+workspace = true

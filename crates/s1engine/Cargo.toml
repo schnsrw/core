@@ -44,3 +44,6 @@ criterion = { workspace = true }
 [[bench]]
 name = "engine_bench"
 harness = false
+
+[lints]
+workspace = true

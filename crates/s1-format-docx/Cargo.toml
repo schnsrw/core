@@ -27,3 +27,6 @@ x509-cert = { workspace = true, optional = true }
 pretty_assertions = { workspace = true }
 ring = { workspace = true }
 x509-cert = { workspace = true }
+
+[lints]
+workspace = true

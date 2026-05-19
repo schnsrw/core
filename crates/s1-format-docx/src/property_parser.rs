@@ -1406,16 +1406,16 @@ mod tests {
         skip_to_start(&mut reader, b"pPr");
         let attrs = parse_paragraph_properties(&mut reader).unwrap();
         assert_eq!(
-            attrs.get_string(&AttributeKey::RevisionType).as_deref(),
+            attrs.get_string(&AttributeKey::RevisionType),
             Some("PropertyChange")
         );
         assert_eq!(attrs.get_i64(&AttributeKey::RevisionId), Some(10));
         assert_eq!(
-            attrs.get_string(&AttributeKey::RevisionAuthor).as_deref(),
+            attrs.get_string(&AttributeKey::RevisionAuthor),
             Some("Alice")
         );
         assert_eq!(
-            attrs.get_string(&AttributeKey::RevisionDate).as_deref(),
+            attrs.get_string(&AttributeKey::RevisionDate),
             Some("2026-01-01T12:00:00Z")
         );
         // Current alignment should still be parsed
@@ -1432,14 +1432,11 @@ mod tests {
         skip_to_start(&mut reader, b"tcPr");
         let attrs = parse_cell_properties(&mut reader).unwrap();
         assert_eq!(
-            attrs.get_string(&AttributeKey::RevisionType).as_deref(),
+            attrs.get_string(&AttributeKey::RevisionType),
             Some("PropertyChange")
         );
         assert_eq!(attrs.get_i64(&AttributeKey::RevisionId), Some(20));
-        assert_eq!(
-            attrs.get_string(&AttributeKey::RevisionAuthor).as_deref(),
-            Some("Bob")
-        );
+        assert_eq!(attrs.get_string(&AttributeKey::RevisionAuthor), Some("Bob"));
         // Cell width should still be parsed
         assert!(attrs.get(&AttributeKey::CellWidth).is_some());
     }
@@ -1451,12 +1448,12 @@ mod tests {
         skip_to_start(&mut reader, b"tblPr");
         let attrs = parse_table_properties(&mut reader).unwrap();
         assert_eq!(
-            attrs.get_string(&AttributeKey::RevisionType).as_deref(),
+            attrs.get_string(&AttributeKey::RevisionType),
             Some("PropertyChange")
         );
         assert_eq!(attrs.get_i64(&AttributeKey::RevisionId), Some(30));
         assert_eq!(
-            attrs.get_string(&AttributeKey::RevisionAuthor).as_deref(),
+            attrs.get_string(&AttributeKey::RevisionAuthor),
             Some("Carol")
         );
         assert_eq!(
@@ -1472,12 +1469,12 @@ mod tests {
         skip_to_start(&mut reader, b"trPr");
         let attrs = parse_row_properties(&mut reader).unwrap();
         assert_eq!(
-            attrs.get_string(&AttributeKey::RevisionType).as_deref(),
+            attrs.get_string(&AttributeKey::RevisionType),
             Some("PropertyChange")
         );
         assert_eq!(attrs.get_i64(&AttributeKey::RevisionId), Some(40));
         assert_eq!(
-            attrs.get_string(&AttributeKey::RevisionAuthor).as_deref(),
+            attrs.get_string(&AttributeKey::RevisionAuthor),
             Some("Dave")
         );
         assert_eq!(attrs.get_bool(&AttributeKey::TableHeaderRow), Some(true));

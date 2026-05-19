@@ -20,3 +20,6 @@ unicode-script = "0.5"
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true

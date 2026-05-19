@@ -377,7 +377,7 @@ mod tests {
             doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
                 .unwrap();
             let text_id = doc.next_id();
-            doc.insert_node(run_id, 0, Node::text(text_id, &format!("H{}", level)))
+            doc.insert_node(run_id, 0, Node::text(text_id, format!("H{}", level)))
                 .unwrap();
         }
 
@@ -519,7 +519,7 @@ mod tests {
             doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
                 .unwrap();
             let text_id = doc.next_id();
-            doc.insert_node(run_id, 0, Node::text(text_id, &format!("Item {}", i + 1)))
+            doc.insert_node(run_id, 0, Node::text(text_id, format!("Item {}", i + 1)))
                 .unwrap();
         }
 
@@ -551,7 +551,7 @@ mod tests {
             doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
                 .unwrap();
             let text_id = doc.next_id();
-            doc.insert_node(run_id, 0, Node::text(text_id, &format!("Item {}", i + 1)))
+            doc.insert_node(run_id, 0, Node::text(text_id, format!("Item {}", i + 1)))
                 .unwrap();
         }
 

@@ -1308,7 +1308,7 @@ mod tests {
         if let Some(s1_model::AttributeValue::MediaId(mid)) =
             img2.attributes.get(&AttributeKey::ImageMediaId)
         {
-            let item = doc2.media().get(mid.clone()).unwrap();
+            let item = doc2.media().get(*mid).unwrap();
             assert_eq!(item.data, png_bytes);
             assert_eq!(item.content_type, "image/png");
         } else {

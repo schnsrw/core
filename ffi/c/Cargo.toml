@@ -16,3 +16,6 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 s1engine = { workspace = true }
+
+[lints]
+workspace = true

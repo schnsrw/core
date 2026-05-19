@@ -444,7 +444,7 @@ mod tests {
 
         let mut word_doc = vec![0u8; 10];
         // Place "Hello" as UTF-16LE at byte offset 10
-        for &ch in &[b'H', b'e', b'l', b'l', b'o'] {
+        for &ch in b"Hello" {
             word_doc.push(ch);
             word_doc.push(0x00); // High byte for ASCII in UTF-16LE
         }

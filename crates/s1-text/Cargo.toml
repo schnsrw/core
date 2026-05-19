@@ -27,3 +27,6 @@ hyphenation = { version = "0.8.4", features = ["embed_en-us"] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true

@@ -407,7 +407,7 @@ mod tests {
             let mut std_data = Vec::new();
             let sti: u16 = 1;
             std_data.extend_from_slice(&sti.to_le_bytes());
-            let word1 = (1u16 & 0x0F) | (0u16 << 4); // basedOn = 0
+            let word1 = 1u16 & 0x0F; // basedOn = 0
             std_data.extend_from_slice(&word1.to_le_bytes());
             std_data.extend_from_slice(&0u16.to_le_bytes());
             std_data.extend_from_slice(&0u16.to_le_bytes());

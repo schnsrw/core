@@ -11176,12 +11176,7 @@ mod tests {
         doc.append_heading(1, "Hello").unwrap();
         doc.append_paragraph("World").unwrap();
         doc.set_bold(
-            &doc.paragraph_ids_json()
-                .unwrap()
-                .split('"')
-                .nth(1)
-                .unwrap()
-                .to_string(),
+            doc.paragraph_ids_json().unwrap().split('"').nth(1).unwrap(),
             true,
         )
         .unwrap();
