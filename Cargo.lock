@@ -1469,6 +1469,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "pretty_assertions",
+ "quick-xml",
  "s1-convert",
  "s1-format-docx",
  "s1-format-md",
