@@ -1,0 +1,64 @@
+{
+  "name": "@schnsrw/core",
+  "version": "0.1.0",
+  "description": "Casual Core — WASM-powered document converter for DOCX, ODT, PDF, MD, TXT (part of Casual Office)",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./wasm": "./wasm/s1engine_wasm_bg.wasm",
+    "./loader": {
+      "types": "./dist/loader.d.ts",
+      "import": "./dist/loader.js"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:wasm": "wasm-pack build ../ffi/wasm --target web --out-dir ../../js/wasm --release",
+    "build:ts": "tsup src/index.ts src/loader.ts --format esm,cjs --dts --clean",
+    "build": "npm run build:wasm && npm run build:ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src --ext .ts"
+  },
+  "keywords": [
+    "document",
+    "converter",
+    "docx",
+    "odt",
+    "pdf",
+    "markdown",
+    "wasm",
+    "casual-office"
+  ],
+  "author": "schnsrw",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/schnsrw/core.git"
+  },
+  "homepage": "https://github.com/schnsrw/core#readme",
+  "bugs": {
+    "url": "https://github.com/schnsrw/core/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsup": "^8",
+    "typescript": "^5",
+    "vitest": "^1"
+  }
+}

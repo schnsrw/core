@@ -1,0 +1,29 @@
+[package]
+name = "s1-text"
+description = "Text processing (shaping, fonts, Unicode) for s1engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["embedded-font"]
+embedded-font = []
+
+[dependencies]
+s1-model = { workspace = true }
+thiserror = { workspace = true }
+rustybuzz = "0.20"
+ttf-parser = "0.25"
+fontdb = "0.23"
+unicode-bidi = "0.3"
+unicode-linebreak = "0.1"
+unicode-script = "0.5"
+hyphenation = { version = "0.8.4", features = ["embed_en-us"] }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

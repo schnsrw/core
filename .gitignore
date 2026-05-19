@@ -1,0 +1,40 @@
+# Rust
+/target
+Cargo.lock.bak
+**/*.rs.bk
+
+# Node / Bun
+node_modules/
+.pnpm-store/
+.parcel-cache/
+
+# Build outputs
+dist/
+js/pkg/
+js/wasm/
+demo/dist/
+
+# Tooling
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*.iml
+
+# Test artefacts
+test-results/
+playwright-report/
+coverage/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Generated wasm-bindgen artefacts
+ffi/wasm/pkg/
+
+# Misc
+*.orig
+*.bak

@@ -1,0 +1,46 @@
+[package]
+name = "s1engine"
+description = "Casual Core — document engine for read/write/convert across DOCX, ODT, PDF, TXT, MD"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+s1-model = { workspace = true }
+s1-ops = { workspace = true }
+thiserror = { workspace = true }
+
+# Feature-gated format crates
+s1-format-docx = { workspace = true, optional = true }
+s1-format-odt = { workspace = true, optional = true }
+s1-format-pdf = { workspace = true, optional = true }
+s1-format-txt = { workspace = true, optional = true }
+s1-format-md = { workspace = true, optional = true }
+s1-convert = { workspace = true, optional = true }
+s1-layout = { workspace = true, optional = true }
+s1-text = { workspace = true, optional = true }
+
+[features]
+default = ["docx", "odt", "txt", "md"]
+docx = ["dep:s1-format-docx"]
+odt = ["dep:s1-format-odt"]
+pdf = ["dep:s1-format-pdf", "layout"]
+txt = ["dep:s1-format-txt"]
+md = ["dep:s1-format-md"]
+convert = ["dep:s1-convert"]
+layout = ["dep:s1-layout", "dep:s1-text"]
+doc-legacy = ["convert"]
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+zip = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "engine_bench"
+harness = false

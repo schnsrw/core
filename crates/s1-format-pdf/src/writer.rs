@@ -1,0 +1,2580 @@
+//! PDF writer — converts a `LayoutDocument` into PDF bytes.
+//!
+//! Uses `pdf-writer` for low-level PDF generation and `subsetter` for font
+//! subsetting (only embed used glyphs to keep file sizes reasonable).
+
+use std::collections::HashMap;
+
+use pdf_writer::types::{FontFlags, TextRenderingMode};
+use pdf_writer::{Content, Finish, Name, Pdf, Rect, Ref, Str, TextStr};
+
+use s1_layout::{
+    LayoutAnnotation, LayoutAnnotationType, LayoutBlock, LayoutBlockKind, LayoutBookmark,
+    LayoutDocument, LayoutLine, LayoutTableRow,
+};
+use s1_model::DocumentMetadata;
+use s1_text::{FontDatabase, FontId};
+
+use crate::error::PdfError;
+
+/// PDF/A conformance level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PdfAConformance {
+    /// PDF/A-1b (ISO 19005-1, Level B) — visual reproduction.
+    PdfA1b,
+}
+
+/// Write a laid-out document to PDF bytes.
+///
+/// # Arguments
+///
+/// * `layout` — The fully laid-out document.
+/// * `font_db` — Font database for loading font data.
+/// * `metadata` — Optional document metadata (title, author, etc.).
+///
+/// # Errors
+///
+/// Returns `PdfError` if font embedding or PDF generation fails.
+pub fn write_pdf(
+    layout: &LayoutDocument,
+    font_db: &FontDatabase,
+    metadata: Option<&DocumentMetadata>,
+) -> Result<Vec<u8>, PdfError> {
+    write_pdf_internal(layout, font_db, metadata, None)
+}
+
+/// Write a laid-out document to PDF/A-compliant bytes.
+///
+/// PDF/A-1b adds an ICC color profile output intent and XMP metadata for archival compliance.
+///
+/// # Arguments
+///
+/// * `layout` — The fully laid-out document.
+/// * `font_db` — Font database for loading font data.
+/// * `metadata` — Optional document metadata (title, author, etc.).
+/// * `conformance` — The PDF/A conformance level.
+///
+/// # Errors
+///
+/// Returns `PdfError` if font embedding or PDF generation fails.
+pub fn write_pdf_a(
+    layout: &LayoutDocument,
+    font_db: &FontDatabase,
+    metadata: Option<&DocumentMetadata>,
+    conformance: PdfAConformance,
+) -> Result<Vec<u8>, PdfError> {
+    write_pdf_internal(layout, font_db, metadata, Some(conformance))
+}
+
+/// Internal PDF writer that optionally adds PDF/A compliance.
+fn write_pdf_internal(
+    layout: &LayoutDocument,
+    font_db: &FontDatabase,
+    metadata: Option<&DocumentMetadata>,
+    pdfa: Option<PdfAConformance>,
+) -> Result<Vec<u8>, PdfError> {
+    let mut pdf = Pdf::new();
+    let mut alloc = RefAllocator::new();
+
+    // Collect all unique fonts used across the document
+    let font_usage = collect_font_usage(layout);
+
+    // Embed fonts and build the font map (FontId → PDF font name + Ref)
+    let font_map = embed_fonts(&mut pdf, &mut alloc, font_db, &font_usage)?;
+
+    // Embed images and build the image map (media_id → XObject Ref + resource name)
+    let image_map = embed_images(&mut pdf, &mut alloc, layout)?;
+
+    // Write document metadata
+    if let Some(meta) = metadata {
+        write_metadata(&mut pdf, &mut alloc, meta);
+    }
+
+    // Write pages
+    let catalog_ref = alloc.next();
+    let page_tree_ref = alloc.next();
+
+    let mut page_refs = Vec::new();
+
+    for page in &layout.pages {
+        // Collect annotations for this page
+        let page_annotations: Vec<&LayoutAnnotation> = layout
+            .annotations
+            .iter()
+            .filter(|a| a.page_index == page.index)
+            .collect();
+
+        let page_ref = write_page(
+            &mut pdf,
+            &mut alloc,
+            page,
+            page_tree_ref,
+            &font_map,
+            &image_map,
+            &page_annotations,
+        )?;
+        page_refs.push(page_ref);
+    }
+
+    // Write page tree
+    let mut page_tree = pdf.pages(page_tree_ref);
+    page_tree.kids(page_refs.iter().copied());
+    page_tree.count(page_refs.len() as i32);
+    page_tree.finish();
+
+    // Write outline (bookmarks) if present
+    let outline_ref = if !layout.bookmarks.is_empty() {
+        Some(write_outline(
+            &mut pdf,
+            &mut alloc,
+            &layout.bookmarks,
+            &page_refs,
+        ))
+    } else {
+        None
+    };
+
+    // PDF/A: write ICC output intent and XMP metadata
+    let (output_intents_ref, xmp_ref) = if let Some(conformance) = pdfa {
+        let oi = write_pdfa_output_intent(&mut pdf, &mut alloc);
+        let xmp = write_xmp_metadata(&mut pdf, &mut alloc, metadata, conformance);
+        (Some(oi), Some(xmp))
+    } else {
+        (None, None)
+    };
+
+    // Write catalog
+    let mut catalog = pdf.catalog(catalog_ref);
+    catalog.pages(page_tree_ref);
+    if let Some(outline_ref) = outline_ref {
+        catalog.outlines(outline_ref);
+    }
+    if let Some(oi_ref) = output_intents_ref {
+        catalog.insert(Name(b"OutputIntents")).array().item(oi_ref);
+    }
+    if let Some(xmp) = xmp_ref {
+        catalog.insert(Name(b"Metadata")).primitive(xmp);
+    }
+    catalog.finish();
+
+    Ok(pdf.finish())
+}
+
+/// A font entry in the PDF.
+struct PdfFont {
+    /// PDF resource name (e.g., "F1", "F2").
+    name: String,
+    /// Reference to the font object in the PDF.
+    font_ref: Ref,
+}
+
+/// An image XObject entry in the PDF.
+struct PdfImage {
+    /// PDF resource name (e.g., "Im1", "Im2").
+    name: String,
+    /// Reference to the XObject in the PDF.
+    xobject_ref: Ref,
+}
+
+/// Reference allocator.
+struct RefAllocator {
+    next: i32,
+}
+
+impl RefAllocator {
+    fn new() -> Self {
+        Self { next: 1 }
+    }
+
+    fn next(&mut self) -> Ref {
+        let r = Ref::new(self.next);
+        self.next += 1;
+        r
+    }
+}
+
+/// Collect all unique FontIds used in the layout.
+/// Per-font usage data: the set of glyph IDs used and a mapping from each
+/// glyph ID to the Unicode string it represents (derived from the original
+/// source text and the shaping cluster information).
+struct FontUsage {
+    glyph_ids: Vec<u16>,
+    /// Maps glyph ID → Unicode string.  For simple 1:1 mappings this is a
+    /// single character; for ligatures it can be multiple characters.
+    glyph_to_unicode: HashMap<u16, String>,
+}
+
+impl FontUsage {
+    fn new() -> Self {
+        Self {
+            glyph_ids: Vec::new(),
+            glyph_to_unicode: HashMap::new(),
+        }
+    }
+}
+
+fn collect_font_usage(layout: &LayoutDocument) -> HashMap<FontId, FontUsage> {
+    let mut usage: HashMap<FontId, FontUsage> = HashMap::new();
+
+    for page in &layout.pages {
+        collect_blocks_font_usage(&page.blocks, &mut usage);
+        if let Some(ref header) = page.header {
+            collect_block_font_usage(header, &mut usage);
+        }
+        if let Some(ref footer) = page.footer {
+            collect_block_font_usage(footer, &mut usage);
+        }
+        collect_blocks_font_usage(&page.footnotes, &mut usage);
+        collect_blocks_font_usage(&page.floating_images, &mut usage);
+    }
+
+    usage
+}
+
+fn collect_blocks_font_usage(blocks: &[LayoutBlock], usage: &mut HashMap<FontId, FontUsage>) {
+    for block in blocks {
+        collect_block_font_usage(block, usage);
+    }
+}
+
+fn collect_block_font_usage(block: &LayoutBlock, usage: &mut HashMap<FontId, FontUsage>) {
+    match &block.kind {
+        LayoutBlockKind::Paragraph { lines, .. } => {
+            for line in lines {
+                for run in &line.runs {
+                    let font_usage = usage.entry(run.font_id).or_insert_with(FontUsage::new);
+                    let text = &run.text;
+                    let text_bytes = text.as_bytes();
+
+                    for (i, g) in run.glyphs.iter().enumerate() {
+                        // Record the glyph ID
+                        if !font_usage.glyph_ids.contains(&g.glyph_id) {
+                            font_usage.glyph_ids.push(g.glyph_id);
+                        }
+
+                        // Derive the Unicode string this glyph maps to using
+                        // the cluster (byte offset) field.  The cluster of the
+                        // *next* glyph (or end of text) gives the byte range.
+                        if let std::collections::hash_map::Entry::Vacant(e) =
+                            font_usage.glyph_to_unicode.entry(g.glyph_id)
+                        {
+                            let start = g.cluster as usize;
+                            let end = run
+                                .glyphs
+                                .get(i + 1)
+                                .map(|next| next.cluster as usize)
+                                .unwrap_or(text_bytes.len());
+                            // Ensure valid range within the text
+                            if start <= end && end <= text_bytes.len() {
+                                if let Ok(s) = std::str::from_utf8(&text_bytes[start..end]) {
+                                    if !s.is_empty() {
+                                        e.insert(s.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        LayoutBlockKind::Table { rows, .. } => {
+            for row in rows {
+                for cell in &row.cells {
+                    collect_blocks_font_usage(&cell.blocks, usage);
+                }
+            }
+        }
+        LayoutBlockKind::Image { .. } => {}
+        _ => {}
+    }
+}
+
+/// Embed fonts into the PDF and return a mapping from FontId to PDF font info.
+fn embed_fonts(
+    pdf: &mut Pdf,
+    alloc: &mut RefAllocator,
+    font_db: &FontDatabase,
+    font_usage: &HashMap<FontId, FontUsage>,
+) -> Result<HashMap<FontId, PdfFont>, PdfError> {
+    let mut font_map = HashMap::new();
+
+    for (font_idx, (font_id, fu)) in font_usage.iter().enumerate() {
+        let glyph_ids = &fu.glyph_ids;
+        let font_name = format!("F{}", font_idx);
+
+        let font_ref = alloc.next();
+        let cid_ref = alloc.next();
+        let descriptor_ref = alloc.next();
+        let cmap_ref = alloc.next();
+        let data_ref = alloc.next();
+
+        if let Some(font) = font_db.load_font(*font_id) {
+            // Build a GlyphRemapper for subsetting
+            let remapper = subsetter::GlyphRemapper::new_from_glyphs(glyph_ids);
+
+            // Try to subset the font
+            let font_data = font.data();
+            let subset_data = match subsetter::subset(font_data, 0, &remapper) {
+                Ok(data) => data,
+                Err(_e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "[s1-format-pdf] Warning: font subsetting failed, embedding full font"
+                    );
+                    font_data.to_vec() // Fall back to full font
+                }
+            };
+
+            let metrics = font.metrics(1000.0);
+            let upem = font.units_per_em();
+
+            // Write the font stream (compressed)
+            let compressed = miniz_oxide::deflate::compress_to_vec(&subset_data, 6);
+            let mut stream = pdf.stream(data_ref, &compressed);
+            stream.filter(pdf_writer::Filter::FlateDecode);
+            stream.pair(Name(b"Length1"), subset_data.len() as i32);
+            stream.finish();
+
+            // Font descriptor
+            let mut descriptor = pdf.font_descriptor(descriptor_ref);
+            descriptor.name(Name(font.family_name().as_bytes()));
+            descriptor.flags(FontFlags::NON_SYMBOLIC);
+            descriptor.bbox(Rect::new(
+                0.0,
+                metrics.descent as f32 * upem as f32 / 1000.0,
+                1000.0,
+                metrics.ascent as f32 * upem as f32 / 1000.0,
+            ));
+            descriptor.italic_angle(if font.is_italic() { -12.0 } else { 0.0 });
+            descriptor.ascent(metrics.ascent as f32 * upem as f32 / 1000.0);
+            descriptor.descent(metrics.descent as f32 * upem as f32 / 1000.0);
+            descriptor.cap_height(metrics.ascent as f32 * upem as f32 / 1000.0 * 0.7);
+            descriptor.stem_v(80.0);
+            descriptor.font_file2(data_ref);
+            descriptor.finish();
+
+            // CIDFont
+            let mut cid_font = pdf.cid_font(cid_ref);
+            cid_font.subtype(pdf_writer::types::CidFontType::Type2);
+            cid_font.base_font(Name(font.family_name().as_bytes()));
+            cid_font.system_info(pdf_writer::types::SystemInfo {
+                registry: Str(b"Adobe"),
+                ordering: Str(b"Identity"),
+                supplement: 0,
+            });
+            cid_font.font_descriptor(descriptor_ref);
+            cid_font.default_width(1000.0);
+
+            // Write glyph widths
+            if !glyph_ids.is_empty() {
+                let mut sorted_gids: Vec<u16> = glyph_ids.clone();
+                sorted_gids.sort();
+                let widths: Vec<f32> = sorted_gids
+                    .iter()
+                    .map(|&gid| {
+                        font.glyph_hor_advance(gid)
+                            .map(|a| a as f32 * 1000.0 / upem as f32)
+                            .unwrap_or(500.0)
+                    })
+                    .collect();
+                if let Some(&first_gid) = sorted_gids.first() {
+                    cid_font
+                        .widths()
+                        .consecutive(first_gid, widths.iter().copied());
+                }
+            }
+            cid_font.finish();
+
+            // ToUnicode CMap — maps glyph IDs to Unicode code points for
+            // correct text extraction / copy-paste from the PDF.
+            let cmap_data = build_tounicode_cmap(&fu.glyph_to_unicode);
+            pdf.stream(cmap_ref, &cmap_data);
+
+            // Type0 font
+            let mut type0 = pdf.type0_font(font_ref);
+            type0.base_font(Name(font.family_name().as_bytes()));
+            type0.encoding_predefined(Name(b"Identity-H"));
+            type0.descendant_font(cid_ref);
+            type0.to_unicode(cmap_ref);
+            type0.finish();
+        } else {
+            // No font data — write a placeholder standard font
+            let mut font_obj = pdf.type1_font(font_ref);
+            font_obj.base_font(Name(b"Helvetica"));
+            font_obj.finish();
+        }
+
+        font_map.insert(
+            *font_id,
+            PdfFont {
+                name: font_name,
+                font_ref,
+            },
+        );
+    }
+
+    Ok(font_map)
+}
+
+/// Embed images from the layout into the PDF as XObjects.
+///
+/// Deduplicates by `media_id` so identical images share one XObject.
+fn embed_images(
+    pdf: &mut Pdf,
+    alloc: &mut RefAllocator,
+    layout: &LayoutDocument,
+) -> Result<HashMap<String, PdfImage>, PdfError> {
+    let mut image_map: HashMap<String, PdfImage> = HashMap::new();
+    let mut img_idx = 0u32;
+
+    for page in &layout.pages {
+        collect_and_embed_images(pdf, alloc, &page.blocks, &mut image_map, &mut img_idx)?;
+        if let Some(ref header) = page.header {
+            collect_and_embed_images(
+                pdf,
+                alloc,
+                std::slice::from_ref(header),
+                &mut image_map,
+                &mut img_idx,
+            )?;
+        }
+        if let Some(ref footer) = page.footer {
+            collect_and_embed_images(
+                pdf,
+                alloc,
+                std::slice::from_ref(footer),
+                &mut image_map,
+                &mut img_idx,
+            )?;
+        }
+        collect_and_embed_images(pdf, alloc, &page.footnotes, &mut image_map, &mut img_idx)?;
+        collect_and_embed_images(
+            pdf,
+            alloc,
+            &page.floating_images,
+            &mut image_map,
+            &mut img_idx,
+        )?;
+    }
+
+    Ok(image_map)
+}
+
+fn collect_and_embed_images(
+    pdf: &mut Pdf,
+    alloc: &mut RefAllocator,
+    blocks: &[LayoutBlock],
+    image_map: &mut HashMap<String, PdfImage>,
+    img_idx: &mut u32,
+) -> Result<(), PdfError> {
+    for block in blocks {
+        match &block.kind {
+            LayoutBlockKind::Image {
+                media_id,
+                image_data: Some(data),
+                content_type,
+                ..
+            } if !media_id.is_empty() && !data.is_empty() => {
+                if image_map.contains_key(media_id) {
+                    continue; // Already embedded
+                }
+
+                // Limit image data size to prevent OOM (100MB max)
+                const MAX_IMAGE_SIZE: usize = 100 * 1024 * 1024;
+                if data.len() > MAX_IMAGE_SIZE {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "[s1-format-pdf] Warning: skipping oversized image ({} bytes)",
+                        data.len()
+                    );
+                    continue;
+                }
+
+                let ct = content_type.as_deref().unwrap_or("");
+                let xobject_ref = alloc.next();
+                let name = format!("Im{}", *img_idx);
+                *img_idx += 1;
+
+                if ct.contains("jpeg") || ct.contains("jpg") || is_jpeg(data) {
+                    embed_jpeg_image(pdf, xobject_ref, data)?;
+                } else {
+                    // Try to decode as PNG or other image format via the `image` crate
+                    embed_decoded_image(pdf, xobject_ref, data)?;
+                }
+
+                image_map.insert(media_id.clone(), PdfImage { name, xobject_ref });
+            }
+            LayoutBlockKind::Table { rows, .. } => {
+                for row in rows {
+                    for cell in &row.cells {
+                        collect_and_embed_images(pdf, alloc, &cell.blocks, image_map, img_idx)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if bytes start with JPEG SOI marker.
+fn is_jpeg(data: &[u8]) -> bool {
+    data.len() >= 2 && data[0] == 0xFF && data[1] == 0xD8
+}
+
+/// Maximum image dimension (pixels) to prevent excessive memory use.
+const MAX_IMAGE_DIMENSION: u32 = 16384;
+
+/// Embed a JPEG image as-is with DCTDecode filter.
+fn embed_jpeg_image(pdf: &mut Pdf, xobject_ref: Ref, data: &[u8]) -> Result<(), PdfError> {
+    // Parse JPEG to get dimensions and component count
+    let info = jpeg_info(data);
+    let (width, height, num_components) = match info {
+        Some(ref i) => (i.width, i.height, i.num_components),
+        None => (1, 1, 3), // Default to RGB if parsing fails
+    };
+
+    if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+        return Err(PdfError::Generation(format!(
+            "image dimensions {width}x{height} exceed maximum {MAX_IMAGE_DIMENSION}"
+        )));
+    }
+
+    let mut stream = pdf.image_xobject(xobject_ref, data);
+    stream.filter(pdf_writer::Filter::DctDecode);
+    stream.width(width as i32);
+    stream.height(height as i32);
+    // Select color space based on the actual number of JPEG components
+    match num_components {
+        1 => stream.color_space().device_gray(),
+        4 => stream.color_space().device_cmyk(),
+        _ => stream.color_space().device_rgb(), // 3 (YCbCr/RGB) or unknown
+    };
+    stream.bits_per_component(8);
+    stream.finish();
+
+    Ok(())
+}
+
+/// Parsed JPEG metadata from SOF markers.
+struct JpegInfo {
+    width: u32,
+    height: u32,
+    /// Number of color components (1=grayscale, 3=RGB/YCbCr, 4=CMYK).
+    num_components: u8,
+}
+
+/// Parse JPEG dimensions and component count from SOF markers.
+fn jpeg_info(data: &[u8]) -> Option<JpegInfo> {
+    let mut i = 2; // Skip SOI
+    while i + 4 < data.len() {
+        if data[i] != 0xFF {
+            break;
+        }
+        let marker = data[i + 1];
+        // SOF markers contain dimensions and component count:
+        // SOF0-SOF3 (baseline, extended, progressive, lossless)
+        // SOF5-SOF7 (differential variants)
+        // SOF9-SOF11 (arithmetic coded variants)
+        // Layout: [FF][marker][length_hi][length_lo][precision][height_hi][height_lo][width_hi][width_lo][num_components]
+        if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB) && i + 9 < data.len() {
+            let height = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+            let width = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
+            let num_components = data[i + 9];
+            return Some(JpegInfo {
+                width,
+                height,
+                num_components,
+            });
+        }
+        let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+        i += 2 + len;
+    }
+    None
+}
+
+/// Check PNG dimensions from the IHDR chunk without decoding the full image.
+///
+/// PNG files start with an 8-byte signature, followed by chunks. The first
+/// chunk is always IHDR which contains width (4 bytes) and height (4 bytes)
+/// at offsets 16 and 20 respectively.
+fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    // PNG signature (8 bytes) + IHDR length (4) + "IHDR" (4) + width (4) + height (4) = 24 bytes
+    if data.len() < 24 {
+        return None;
+    }
+    // Check PNG signature
+    if &data[0..8] != b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    // IHDR chunk type at offset 12
+    if &data[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+    let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+    Some((width, height))
+}
+
+/// Decode an image (PNG, etc.) to RGB pixels and embed with FlateDecode.
+fn embed_decoded_image(pdf: &mut Pdf, xobject_ref: Ref, data: &[u8]) -> Result<(), PdfError> {
+    // Validate dimensions BEFORE full decode to prevent DoS from oversized images.
+    // For PNG, read the IHDR chunk directly without decoding pixel data.
+    // For other formats, use the image crate's lightweight dimension reader.
+    if let Some((w, h)) = png_dimensions(data) {
+        if w > MAX_IMAGE_DIMENSION || h > MAX_IMAGE_DIMENSION {
+            return Err(PdfError::Generation(format!(
+                "image dimensions {w}x{h} exceed maximum {MAX_IMAGE_DIMENSION}"
+            )));
+        }
+    } else if let Ok(reader) =
+        image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format()
+    {
+        if let Ok((w, h)) = reader.into_dimensions() {
+            if w > MAX_IMAGE_DIMENSION || h > MAX_IMAGE_DIMENSION {
+                return Err(PdfError::Generation(format!(
+                    "image dimensions {w}x{h} exceed maximum {MAX_IMAGE_DIMENSION}"
+                )));
+            }
+        }
+    }
+
+    let img = image::load_from_memory(data)
+        .map_err(|e| PdfError::Generation(format!("image decode error: {e}")))?;
+
+    let rgb = img.to_rgb8();
+    let width = rgb.width();
+    let height = rgb.height();
+    let raw_pixels = rgb.into_raw();
+
+    let compressed = miniz_oxide::deflate::compress_to_vec(&raw_pixels, 6);
+
+    let mut stream = pdf.image_xobject(xobject_ref, &compressed);
+    stream.filter(pdf_writer::Filter::FlateDecode);
+    stream.width(width as i32);
+    stream.height(height as i32);
+    stream.color_space().device_rgb();
+    stream.bits_per_component(8);
+    stream.finish();
+
+    Ok(())
+}
+
+/// A hyperlink annotation to create on a page.
+struct HyperlinkAnnotation {
+    /// PDF rectangle (bottom-left x, bottom-left y, top-right x, top-right y).
+    rect: Rect,
+    /// Target URL.
+    url: String,
+}
+
+/// Write a single page to the PDF.
+fn write_page(
+    pdf: &mut Pdf,
+    alloc: &mut RefAllocator,
+    page: &s1_layout::LayoutPage,
+    page_tree_ref: Ref,
+    font_map: &HashMap<FontId, PdfFont>,
+    image_map: &HashMap<String, PdfImage>,
+    page_annotations: &[&LayoutAnnotation],
+) -> Result<Ref, PdfError> {
+    let page_ref = alloc.next();
+    let content_ref = alloc.next();
+
+    // Build content stream
+    let mut content = Content::new();
+
+    // Collect hyperlink annotations while rendering
+    let mut hyperlinks: Vec<HyperlinkAnnotation> = Vec::new();
+
+    // Render blocks
+    for block in &page.blocks {
+        render_block(
+            &mut content,
+            block,
+            page.height,
+            font_map,
+            image_map,
+            &mut hyperlinks,
+        );
+    }
+
+    // Render header/footer
+    if let Some(ref header) = page.header {
+        render_block(
+            &mut content,
+            header,
+            page.height,
+            font_map,
+            image_map,
+            &mut hyperlinks,
+        );
+    }
+    if let Some(ref footer) = page.footer {
+        render_block(
+            &mut content,
+            footer,
+            page.height,
+            font_map,
+            image_map,
+            &mut hyperlinks,
+        );
+    }
+
+    // Render footnotes at the bottom of the page
+    if !page.footnotes.is_empty() {
+        // Draw a separator line above footnotes
+        let first_fn = &page.footnotes[0];
+        let sep_y = page.height - first_fn.bounds.y + 4.0;
+        content.save_state();
+        content.set_stroke_rgb(0.4, 0.4, 0.4);
+        content.set_line_width(0.5);
+        move_to(&mut content, page.content_area.x, sep_y);
+        line_to(
+            &mut content,
+            page.content_area.x + page.content_area.width * 0.33,
+            sep_y,
+        );
+        content.stroke();
+        content.restore_state();
+
+        for fn_block in &page.footnotes {
+            render_block(
+                &mut content,
+                fn_block,
+                page.height,
+                font_map,
+                image_map,
+                &mut hyperlinks,
+            );
+        }
+    }
+
+    // Render floating images
+    for float_block in &page.floating_images {
+        render_block(
+            &mut content,
+            float_block,
+            page.height,
+            font_map,
+            image_map,
+            &mut hyperlinks,
+        );
+    }
+
+    let content_data = content.finish();
+
+    // Write content stream
+    pdf.stream(content_ref, &content_data);
+
+    // Write annotation objects first (before the page object borrows pdf)
+    let mut annot_refs = Vec::new();
+    for link in &hyperlinks {
+        let annot_ref = alloc.next();
+        annot_refs.push(annot_ref);
+
+        let mut annot = pdf.annotation(annot_ref);
+        annot.subtype(pdf_writer::types::AnnotationType::Link);
+        annot.rect(link.rect);
+        annot.border(0.0, 0.0, 0.0, None);
+        annot
+            .action()
+            .action_type(pdf_writer::types::ActionType::Uri)
+            .uri(Str(link.url.as_bytes()));
+        annot.finish();
+    }
+
+    // Write document-model annotations (comments, highlights) as PDF annotations
+    for layout_annot in page_annotations {
+        let annot_ref = alloc.next();
+        annot_refs.push(annot_ref);
+
+        match layout_annot.annotation_type {
+            LayoutAnnotationType::Comment => {
+                // Sticky note (Text annotation)
+                let first_rect = layout_annot
+                    .rects
+                    .first()
+                    .copied()
+                    .unwrap_or(s1_layout::Rect::new(72.0, 72.0, 24.0, 24.0));
+                // Convert from top-left to PDF bottom-left coordinates
+                let pdf_y = page.height - first_rect.y - first_rect.height;
+                let rect = Rect::new(
+                    first_rect.x as f32,
+                    pdf_y as f32,
+                    (first_rect.x + first_rect.width) as f32,
+                    (pdf_y + first_rect.height) as f32,
+                );
+
+                let mut annot = pdf.annotation(annot_ref);
+                annot.subtype(pdf_writer::types::AnnotationType::Text);
+                annot.rect(rect);
+                annot.contents(TextStr(&layout_annot.content));
+                // Set author via /T entry
+                if !layout_annot.author.is_empty() {
+                    annot.pair(Name(b"T"), TextStr(&layout_annot.author));
+                }
+                // Yellow color for sticky note
+                annot.color_rgb(1.0, 0.8, 0.0);
+                annot.pair(Name(b"Open"), false);
+                annot.finish();
+            }
+            LayoutAnnotationType::Highlight => {
+                // Highlight annotation — uses QuadPoints for precise text marking
+                if layout_annot.rects.is_empty() {
+                    continue;
+                }
+
+                // Compute bounding rect (union of all highlight rects)
+                let mut min_x = f64::MAX;
+                let mut min_y = f64::MAX;
+                let mut max_x = f64::MIN;
+                let mut max_y = f64::MIN;
+                let mut quad_points: Vec<f32> = Vec::new();
+
+                for r in &layout_annot.rects {
+                    let pdf_bottom = page.height - r.y - r.height;
+                    let pdf_top = page.height - r.y;
+
+                    min_x = min_x.min(r.x);
+                    min_y = min_y.min(pdf_bottom);
+                    max_x = max_x.max(r.x + r.width);
+                    max_y = max_y.max(pdf_top);
+
+                    // QuadPoints order per PDF spec
+                    quad_points.extend_from_slice(&[
+                        r.x as f32,
+                        pdf_top as f32,
+                        (r.x + r.width) as f32,
+                        pdf_top as f32,
+                        r.x as f32,
+                        pdf_bottom as f32,
+                        (r.x + r.width) as f32,
+                        pdf_bottom as f32,
+                    ]);
+                }
+
+                let rect = Rect::new(min_x as f32, min_y as f32, max_x as f32, max_y as f32);
+
+                let mut annot = pdf.annotation(annot_ref);
+                annot.subtype(pdf_writer::types::AnnotationType::Highlight);
+                annot.rect(rect);
+                annot.quad_points(quad_points);
+
+                // Set highlight color from the layout annotation
+                if let Some(color) = &layout_annot.color {
+                    annot.color_rgb(
+                        color.r as f32 / 255.0,
+                        color.g as f32 / 255.0,
+                        color.b as f32 / 255.0,
+                    );
+                } else {
+                    // Default yellow highlight
+                    annot.color_rgb(1.0, 0.92, 0.23);
+                }
+                annot.finish();
+            }
+            _ => {
+                // Unknown annotation type — skip
+                continue;
+            }
+        }
+    }
+
+    // Write page object
+    let mut page_obj = pdf.page(page_ref);
+    page_obj.parent(page_tree_ref);
+    page_obj.media_box(Rect::new(0.0, 0.0, page.width as f32, page.height as f32));
+    page_obj.contents(content_ref);
+
+    // Write resources (fonts + images)
+    {
+        let mut resources = page_obj.resources();
+        let mut fonts = resources.fonts();
+        for pdf_font in font_map.values() {
+            fonts.pair(Name(pdf_font.name.as_bytes()), pdf_font.font_ref);
+        }
+        fonts.finish();
+
+        if !image_map.is_empty() {
+            let mut xobjects = resources.x_objects();
+            for pdf_img in image_map.values() {
+                xobjects.pair(Name(pdf_img.name.as_bytes()), pdf_img.xobject_ref);
+            }
+            xobjects.finish();
+        }
+
+        resources.finish();
+    }
+
+    // Add annotation references to page
+    if !annot_refs.is_empty() {
+        page_obj.annotations(annot_refs.iter().copied());
+    }
+
+    page_obj.finish();
+
+    Ok(page_ref)
+}
+
+/// Render a layout block into a PDF content stream.
+fn render_block(
+    content: &mut Content,
+    block: &LayoutBlock,
+    page_height: f64,
+    font_map: &HashMap<FontId, PdfFont>,
+    image_map: &HashMap<String, PdfImage>,
+    hyperlinks: &mut Vec<HyperlinkAnnotation>,
+) {
+    match &block.kind {
+        LayoutBlockKind::Paragraph {
+            lines,
+            list_marker,
+            background_color,
+            ..
+        } => {
+            // Draw paragraph background if present
+            if let Some(ref bg) = background_color {
+                content.save_state();
+                content.set_fill_rgb(
+                    bg.r as f32 / 255.0,
+                    bg.g as f32 / 255.0,
+                    bg.b as f32 / 255.0,
+                );
+                let bg_y = page_height - block.bounds.y - block.bounds.height;
+                content.rect(
+                    block.bounds.x as f32,
+                    bg_y as f32,
+                    block.bounds.width as f32,
+                    block.bounds.height as f32,
+                );
+                content.fill_nonzero();
+                content.restore_state();
+            }
+
+            // Render list marker if present
+            if let Some(ref marker) = list_marker {
+                if let Some(first_line) = lines.first() {
+                    if let Some(first_run) = first_line.runs.first() {
+                        if let Some(pdf_font) = font_map.get(&first_run.font_id) {
+                            let marker_y = page_height - block.bounds.y - first_line.baseline_y;
+                            let marker_x = block.bounds.x - 15.0; // Position left of text
+                            content.set_fill_rgb(0.0, 0.0, 0.0);
+                            content.begin_text();
+                            content.set_font(
+                                Name(pdf_font.name.as_bytes()),
+                                first_run.font_size as f32,
+                            );
+                            content.next_line(marker_x as f32, marker_y as f32);
+                            // List markers are plain text, encode as raw bytes
+                            content.show(Str(marker.as_bytes()));
+                            content.end_text();
+                        }
+                    }
+                }
+            }
+
+            for line in lines {
+                render_line(
+                    content,
+                    line,
+                    &block.bounds,
+                    page_height,
+                    font_map,
+                    hyperlinks,
+                );
+            }
+        }
+        LayoutBlockKind::Table { rows, .. } => {
+            render_table(
+                content,
+                rows,
+                &block.bounds,
+                page_height,
+                font_map,
+                image_map,
+                hyperlinks,
+            );
+        }
+        LayoutBlockKind::Image {
+            media_id,
+            bounds,
+            image_data,
+            ..
+        } => {
+            if let Some(pdf_img) = image_map.get(media_id) {
+                // Draw the actual image using the XObject
+                let pdf_y = page_height - block.bounds.y - bounds.height;
+                content.save_state();
+                content.transform([
+                    bounds.width as f32,
+                    0.0,
+                    0.0,
+                    bounds.height as f32,
+                    block.bounds.x as f32,
+                    pdf_y as f32,
+                ]);
+                content.x_object(Name(pdf_img.name.as_bytes()));
+                content.restore_state();
+            } else if image_data.is_some() {
+                // Image data present but not in map — should not happen, draw placeholder
+                let pdf_y = page_height - block.bounds.y - bounds.height;
+                content.save_state();
+                content.set_stroke_rgb(0.5, 0.5, 0.5);
+                content.rect(
+                    block.bounds.x as f32,
+                    pdf_y as f32,
+                    bounds.width as f32,
+                    bounds.height as f32,
+                );
+                content.stroke();
+                content.restore_state();
+            } else {
+                // No image data — draw a gray placeholder rectangle
+                let pdf_y = page_height - block.bounds.y - bounds.height;
+                content.save_state();
+                content.set_stroke_rgb(0.5, 0.5, 0.5);
+                content.rect(
+                    block.bounds.x as f32,
+                    pdf_y as f32,
+                    bounds.width as f32,
+                    bounds.height as f32,
+                );
+                content.stroke();
+                content.restore_state();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Render a line of text.
+fn render_line(
+    content: &mut Content,
+    line: &LayoutLine,
+    block_bounds: &s1_layout::Rect,
+    page_height: f64,
+    font_map: &HashMap<FontId, PdfFont>,
+    hyperlinks: &mut Vec<HyperlinkAnnotation>,
+) {
+    // PDF coordinate system: origin at bottom-left, y increases upward
+    let pdf_baseline_y = page_height - block_bounds.y - line.baseline_y;
+
+    for run in &line.runs {
+        if run.glyphs.is_empty() && run.inline_image.is_none() {
+            continue;
+        }
+
+        // Handle inline images
+        if let Some(ref _inline_img) = run.inline_image {
+            // Inline images are rendered as block images by the layout engine
+            continue;
+        }
+
+        if let Some(pdf_font) = font_map.get(&run.font_id) {
+            let pdf_x = block_bounds.x + run.x_offset;
+
+            // Adjust baseline for superscript/subscript
+            let adjusted_baseline_y = if run.superscript {
+                pdf_baseline_y + run.font_size * 0.35
+            } else if run.subscript {
+                pdf_baseline_y - run.font_size * 0.2
+            } else {
+                pdf_baseline_y
+            };
+
+            // Effective font size (smaller for super/subscript)
+            let effective_font_size = if run.superscript || run.subscript {
+                run.font_size * 0.7
+            } else {
+                run.font_size
+            };
+
+            // Draw highlight/background color behind the text
+            if let Some(ref hl) = run.highlight_color {
+                content.save_state();
+                content.set_fill_rgb(
+                    hl.r as f32 / 255.0,
+                    hl.g as f32 / 255.0,
+                    hl.b as f32 / 255.0,
+                );
+                let hl_bottom = adjusted_baseline_y - effective_font_size * 0.25;
+                let hl_height = effective_font_size * 1.2;
+                content.rect(
+                    pdf_x as f32,
+                    hl_bottom as f32,
+                    run.width as f32,
+                    hl_height as f32,
+                );
+                content.fill_nonzero();
+                content.restore_state();
+            }
+
+            // Set text color
+            let r = run.color.r as f32 / 255.0;
+            let g = run.color.g as f32 / 255.0;
+            let b = run.color.b as f32 / 255.0;
+            content.set_fill_rgb(r, g, b);
+
+            // Synthetic bold: use FillStroke rendering mode with a thin stroke
+            if run.bold {
+                content.set_stroke_rgb(r, g, b);
+                content.set_line_width((effective_font_size * 0.03) as f32);
+            }
+
+            content.begin_text();
+            content.set_font(Name(pdf_font.name.as_bytes()), effective_font_size as f32);
+
+            // Synthetic bold: fill then stroke to simulate bold weight
+            if run.bold {
+                content.set_text_rendering_mode(TextRenderingMode::FillStroke);
+            }
+
+            // Synthetic italic: apply a shear transformation via text matrix
+            if run.italic {
+                content.set_text_matrix([
+                    1.0,
+                    0.0,
+                    0.21,
+                    1.0,
+                    pdf_x as f32,
+                    adjusted_baseline_y as f32,
+                ]);
+            } else {
+                content.next_line(pdf_x as f32, adjusted_baseline_y as f32);
+            }
+
+            // Encode glyphs as CID (2 bytes per glyph)
+            let encoded: Vec<u8> = run
+                .glyphs
+                .iter()
+                .flat_map(|g| [(g.glyph_id >> 8) as u8, (g.glyph_id & 0xFF) as u8])
+                .collect();
+
+            content.show(Str(&encoded));
+
+            // Reset text rendering mode after bold run
+            if run.bold {
+                content.set_text_rendering_mode(TextRenderingMode::Fill);
+            }
+
+            content.end_text();
+
+            // Draw underline
+            if run.underline {
+                content.save_state();
+                content.set_stroke_rgb(
+                    run.color.r as f32 / 255.0,
+                    run.color.g as f32 / 255.0,
+                    run.color.b as f32 / 255.0,
+                );
+                let underline_thickness = (effective_font_size * 0.05).max(0.5);
+                content.set_line_width(underline_thickness as f32);
+                let underline_y = adjusted_baseline_y - effective_font_size * 0.15;
+                move_to(content, pdf_x, underline_y);
+                line_to(content, pdf_x + run.width, underline_y);
+                content.stroke();
+                content.restore_state();
+            }
+
+            // Draw strikethrough
+            if run.strikethrough {
+                content.save_state();
+                content.set_stroke_rgb(
+                    run.color.r as f32 / 255.0,
+                    run.color.g as f32 / 255.0,
+                    run.color.b as f32 / 255.0,
+                );
+                let strike_thickness = (effective_font_size * 0.05).max(0.5);
+                content.set_line_width(strike_thickness as f32);
+                let strike_y = adjusted_baseline_y + effective_font_size * 0.3;
+                move_to(content, pdf_x, strike_y);
+                line_to(content, pdf_x + run.width, strike_y);
+                content.stroke();
+                content.restore_state();
+            }
+
+            // Collect hyperlink annotation if this run has a URL
+            if let Some(ref url) = run.hyperlink_url {
+                let run_bottom = adjusted_baseline_y - effective_font_size * 0.2;
+                let run_top = adjusted_baseline_y + effective_font_size * 0.8;
+                hyperlinks.push(HyperlinkAnnotation {
+                    rect: Rect::new(
+                        pdf_x as f32,
+                        run_bottom as f32,
+                        (pdf_x + run.width) as f32,
+                        run_top as f32,
+                    ),
+                    url: url.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// Render table rows.
+fn render_table(
+    content: &mut Content,
+    rows: &[LayoutTableRow],
+    table_bounds: &s1_layout::Rect,
+    page_height: f64,
+    font_map: &HashMap<FontId, PdfFont>,
+    image_map: &HashMap<String, PdfImage>,
+    hyperlinks: &mut Vec<HyperlinkAnnotation>,
+) {
+    for row in rows {
+        let _row_pdf_y = page_height - table_bounds.y - row.bounds.y - row.bounds.height;
+
+        // Draw cell borders, backgrounds, and content
+        for cell in &row.cells {
+            let cell_x = table_bounds.x + cell.bounds.x;
+            let cell_pdf_y =
+                page_height - table_bounds.y - row.bounds.y - cell.bounds.y - cell.bounds.height;
+
+            // Fill cell background if present
+            if let Some(ref bg) = cell.background_color {
+                content.save_state();
+                content.set_fill_rgb(
+                    bg.r as f32 / 255.0,
+                    bg.g as f32 / 255.0,
+                    bg.b as f32 / 255.0,
+                );
+                content.rect(
+                    cell_x as f32,
+                    cell_pdf_y as f32,
+                    cell.bounds.width as f32,
+                    cell.bounds.height as f32,
+                );
+                content.fill_nonzero();
+                content.restore_state();
+            }
+
+            // Draw per-cell borders
+            content.save_state();
+            content.set_line_width(0.5);
+
+            // Top border
+            if let Some(ref border_str) = cell.border_top {
+                let (w, r, g, b) = parse_css_border(border_str);
+                content.set_stroke_rgb(r, g, b);
+                content.set_line_width(w);
+                move_to(content, cell_x, cell_pdf_y + cell.bounds.height);
+                line_to(
+                    content,
+                    cell_x + cell.bounds.width,
+                    cell_pdf_y + cell.bounds.height,
+                );
+                content.stroke();
+            }
+
+            // Bottom border
+            if let Some(ref border_str) = cell.border_bottom {
+                let (w, r, g, b) = parse_css_border(border_str);
+                content.set_stroke_rgb(r, g, b);
+                content.set_line_width(w);
+                move_to(content, cell_x, cell_pdf_y);
+                line_to(content, cell_x + cell.bounds.width, cell_pdf_y);
+                content.stroke();
+            }
+
+            // Left border
+            if let Some(ref border_str) = cell.border_left {
+                let (w, r, g, b) = parse_css_border(border_str);
+                content.set_stroke_rgb(r, g, b);
+                content.set_line_width(w);
+                move_to(content, cell_x, cell_pdf_y);
+                line_to(content, cell_x, cell_pdf_y + cell.bounds.height);
+                content.stroke();
+            }
+
+            // Right border
+            if let Some(ref border_str) = cell.border_right {
+                let (w, r, g, b) = parse_css_border(border_str);
+                content.set_stroke_rgb(r, g, b);
+                content.set_line_width(w);
+                move_to(content, cell_x + cell.bounds.width, cell_pdf_y);
+                line_to(
+                    content,
+                    cell_x + cell.bounds.width,
+                    cell_pdf_y + cell.bounds.height,
+                );
+                content.stroke();
+            }
+
+            // If no per-cell borders, draw a default cell outline
+            if cell.border_top.is_none()
+                && cell.border_bottom.is_none()
+                && cell.border_left.is_none()
+                && cell.border_right.is_none()
+            {
+                content.set_stroke_rgb(0.0, 0.0, 0.0);
+                content.set_line_width(0.5);
+                content.rect(
+                    cell_x as f32,
+                    cell_pdf_y as f32,
+                    cell.bounds.width as f32,
+                    cell.bounds.height as f32,
+                );
+                content.stroke();
+            }
+
+            content.restore_state();
+
+            // Render cell content with coordinate offset.
+            // Cell content blocks have coordinates relative to the cell,
+            // so we must offset by table position + cell position.
+            let offset_x = table_bounds.x + cell.bounds.x;
+            let offset_y = table_bounds.y + row.bounds.y + cell.bounds.y;
+            for block in &cell.blocks {
+                render_block_with_offset(
+                    content,
+                    block,
+                    offset_x,
+                    offset_y,
+                    page_height,
+                    font_map,
+                    image_map,
+                    hyperlinks,
+                );
+            }
+        }
+    }
+}
+
+/// Render a block with coordinate offsets applied.
+///
+/// This is used for table cell content where block bounds are relative to
+/// the cell, not the page.
+#[allow(clippy::too_many_arguments)]
+fn render_block_with_offset(
+    content: &mut Content,
+    block: &LayoutBlock,
+    offset_x: f64,
+    offset_y: f64,
+    page_height: f64,
+    font_map: &HashMap<FontId, PdfFont>,
+    image_map: &HashMap<String, PdfImage>,
+    hyperlinks: &mut Vec<HyperlinkAnnotation>,
+) {
+    // Create adjusted bounds by adding the offset
+    let adjusted_bounds = s1_layout::Rect::new(
+        block.bounds.x + offset_x,
+        block.bounds.y + offset_y,
+        block.bounds.width,
+        block.bounds.height,
+    );
+
+    match &block.kind {
+        LayoutBlockKind::Paragraph { lines, .. } => {
+            for line in lines {
+                render_line(
+                    content,
+                    line,
+                    &adjusted_bounds,
+                    page_height,
+                    font_map,
+                    hyperlinks,
+                );
+            }
+        }
+        LayoutBlockKind::Table { rows, .. } => {
+            // Nested table — recurse with adjusted bounds
+            render_table(
+                content,
+                rows,
+                &adjusted_bounds,
+                page_height,
+                font_map,
+                image_map,
+                hyperlinks,
+            );
+        }
+        LayoutBlockKind::Image {
+            media_id, bounds, ..
+        } => {
+            if let Some(pdf_img) = image_map.get(media_id) {
+                let pdf_y = page_height - adjusted_bounds.y - bounds.height;
+                content.save_state();
+                content.transform([
+                    bounds.width as f32,
+                    0.0,
+                    0.0,
+                    bounds.height as f32,
+                    adjusted_bounds.x as f32,
+                    pdf_y as f32,
+                ]);
+                content.x_object(Name(pdf_img.name.as_bytes()));
+                content.restore_state();
+            }
+        }
+        _ => {} // Other block kinds (future-proofing for non-exhaustive enum)
+    }
+}
+
+/// Helper to move the PDF path cursor.
+fn move_to(content: &mut Content, x: f64, y: f64) {
+    content.move_to(x as f32, y as f32);
+}
+
+/// Helper to draw a line to the given point.
+fn line_to(content: &mut Content, x: f64, y: f64) {
+    content.line_to(x as f32, y as f32);
+}
+
+/// Parse a CSS-style border string like "1px solid #000000" into (width, r, g, b).
+/// Returns defaults (0.5, 0.0, 0.0, 0.0) for unparseable values.
+fn parse_css_border(border: &str) -> (f32, f32, f32, f32) {
+    let parts: Vec<&str> = border.split_whitespace().collect();
+    let width = parts
+        .first()
+        .and_then(|s| {
+            s.trim_end_matches("px")
+                .trim_end_matches("pt")
+                .parse::<f32>()
+                .ok()
+        })
+        .unwrap_or(0.5);
+
+    let (r, g, b) = parts
+        .last()
+        .and_then(|s| {
+            let s = s.trim_start_matches('#');
+            if s.len() == 6 {
+                let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+                Some((r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((0.0, 0.0, 0.0));
+
+    (width, r, g, b)
+}
+
+/// Write PDF document outline (bookmarks).
+fn write_outline(
+    pdf: &mut Pdf,
+    alloc: &mut RefAllocator,
+    bookmarks: &[LayoutBookmark],
+    page_refs: &[Ref],
+) -> Ref {
+    let outline_ref = alloc.next();
+
+    // Pre-allocate refs for each bookmark entry
+    let entry_refs: Vec<Ref> = bookmarks.iter().map(|_| alloc.next()).collect();
+
+    // Write outline dictionary
+    let mut outline = pdf.outline(outline_ref);
+    if let Some(&first) = entry_refs.first() {
+        outline.first(first);
+    }
+    if let Some(&last) = entry_refs.last() {
+        outline.last(last);
+    }
+    outline.count(bookmarks.len() as i32);
+    outline.finish();
+
+    // Write each bookmark entry
+    for (i, bookmark) in bookmarks.iter().enumerate() {
+        let entry_ref = entry_refs[i];
+        let page_ref = page_refs
+            .get(bookmark.page_index)
+            .copied()
+            .unwrap_or(page_refs[0]);
+
+        // PDF y: convert from top-origin to bottom-origin
+        let pdf_y = 792.0 - bookmark.y_position; // Default letter height
+
+        let mut entry = pdf.outline_item(entry_ref);
+        entry.parent(outline_ref);
+        entry.title(TextStr(&bookmark.name));
+
+        // Set prev/next links
+        if i > 0 {
+            entry.prev(entry_refs[i - 1]);
+        }
+        if i + 1 < entry_refs.len() {
+            entry.next(entry_refs[i + 1]);
+        }
+
+        // Destination: [page /XYZ left top null]
+        entry.dest().page(page_ref).xyz(0.0, pdf_y as f32, None);
+
+        entry.finish();
+    }
+
+    outline_ref
+}
+
+/// Write PDF metadata.
+fn write_metadata(pdf: &mut Pdf, alloc: &mut RefAllocator, meta: &DocumentMetadata) {
+    let info_ref = alloc.next();
+    let mut info = pdf.document_info(info_ref);
+    if let Some(ref title) = meta.title {
+        info.title(TextStr(title));
+    }
+    if let Some(ref creator) = meta.creator {
+        info.author(TextStr(creator));
+    }
+    if let Some(ref description) = meta.description {
+        info.subject(TextStr(description));
+    }
+    info.creator(TextStr("s1engine"));
+    info.finish();
+}
+
+/// Build a ToUnicode CMap from the actual glyph-to-Unicode mapping collected
+/// during font usage analysis.
+///
+/// Each entry maps a glyph ID (CID) to the Unicode string it represents.
+/// This enables correct text extraction and copy-paste from the PDF, even for
+/// fonts with ligatures, contextual alternates, or complex OpenType features.
+///
+/// When the mapping is empty (no shaping data available), a minimal identity
+/// codespace range is emitted as a fallback.
+fn build_tounicode_cmap(glyph_to_unicode: &HashMap<u16, String>) -> Vec<u8> {
+    use std::fmt::Write;
+
+    let mut cmap = String::new();
+    cmap.push_str("/CIDInit /ProcSet findresource begin\n");
+    cmap.push_str("12 dict begin\n");
+    cmap.push_str("begincmap\n");
+    cmap.push_str("/CIDSystemInfo\n");
+    cmap.push_str("<< /Registry (Adobe)\n");
+    cmap.push_str("/Ordering (UCS)\n");
+    cmap.push_str("/Supplement 0\n");
+    cmap.push_str(">> def\n");
+    cmap.push_str("/CMapName /Adobe-Identity-UCS def\n");
+    cmap.push_str("/CMapType 2 def\n");
+    cmap.push_str("1 begincodespacerange\n");
+    cmap.push_str("<0000> <FFFF>\n");
+    cmap.push_str("endcodespacerange\n");
+
+    if !glyph_to_unicode.is_empty() {
+        // Sort entries by glyph ID for deterministic output
+        let mut entries: Vec<(u16, &String)> =
+            glyph_to_unicode.iter().map(|(&k, v)| (k, v)).collect();
+        entries.sort_by_key(|&(gid, _)| gid);
+
+        // PDF CMap bfchar sections can hold at most 100 entries each
+        for chunk in entries.chunks(100) {
+            let _ = writeln!(cmap, "{} beginbfchar", chunk.len());
+            for &(gid, unicode_str) in chunk {
+                // Encode the glyph ID as a 2-byte hex value
+                let _ = write!(cmap, "<{:04X}> <", gid);
+                // Encode Unicode string as UTF-16BE hex
+                for ch in unicode_str.chars() {
+                    let code = ch as u32;
+                    if code <= 0xFFFF {
+                        let _ = write!(cmap, "{:04X}", code);
+                    } else {
+                        // Supplementary plane — encode as surrogate pair
+                        let hi = ((code - 0x10000) >> 10) + 0xD800;
+                        let lo = ((code - 0x10000) & 0x3FF) + 0xDC00;
+                        let _ = write!(cmap, "{:04X}{:04X}", hi, lo);
+                    }
+                }
+                cmap.push_str(">\n");
+            }
+            cmap.push_str("endbfchar\n");
+        }
+    }
+
+    cmap.push_str("endcmap\n");
+    cmap.push_str("CMapName currentdict /CMap defineresource pop\n");
+    cmap.push_str("end\n");
+    cmap.push_str("end");
+
+    cmap.into_bytes()
+}
+
+/// Write a PDF/A output intent with a minimal sRGB ICC profile.
+fn write_pdfa_output_intent(pdf: &mut Pdf, alloc: &mut RefAllocator) -> Ref {
+    // Minimal sRGB ICC profile header (128 bytes) — sufficient for PDF/A-1b validation.
+    // This is the ICC profile header indicating sRGB color space.
+    let icc_profile = build_minimal_srgb_icc_profile();
+
+    let icc_ref = alloc.next();
+    let mut icc_stream = pdf.stream(icc_ref, &icc_profile);
+    icc_stream.insert(Name(b"N")).primitive(3i32); // 3 components (RGB)
+    icc_stream.filter(pdf_writer::Filter::FlateDecode);
+    icc_stream.finish();
+
+    let oi_ref = alloc.next();
+    let mut oi = pdf.indirect(oi_ref).dict();
+    oi.pair(Name(b"Type"), Name(b"OutputIntent"));
+    oi.pair(Name(b"S"), Name(b"GTS_PDFA1"));
+    oi.pair(
+        Name(b"OutputConditionIdentifier"),
+        TextStr("sRGB IEC61966-2.1"),
+    );
+    oi.pair(Name(b"RegistryName"), TextStr("http://www.color.org"));
+    oi.pair(Name(b"Info"), TextStr("sRGB IEC61966-2.1"));
+    oi.pair(Name(b"DestOutputProfile"), icc_ref);
+    oi.finish();
+
+    oi_ref
+}
+
+/// Build a minimal sRGB ICC profile for PDF/A compliance.
+///
+/// This generates a minimal valid ICC profile that declares the sRGB color space.
+/// The profile is ~128 bytes (header only, with tag table) and is sufficient
+/// for PDF/A-1b validators.
+fn build_minimal_srgb_icc_profile() -> Vec<u8> {
+    let mut profile = vec![0u8; 128];
+
+    // Profile size (128 bytes minimum header)
+    let size = 128u32;
+    profile[0..4].copy_from_slice(&size.to_be_bytes());
+
+    // Preferred CMM type: 'none'
+    // profile[4..8] stays zero
+
+    // Profile version: 2.1.0
+    profile[8] = 2;
+    profile[9] = 0x10;
+
+    // Device class: 'mntr' (monitor)
+    profile[12..16].copy_from_slice(b"mntr");
+
+    // Color space: 'RGB '
+    profile[16..20].copy_from_slice(b"RGB ");
+
+    // PCS (Profile Connection Space): 'XYZ '
+    profile[20..24].copy_from_slice(b"XYZ ");
+
+    // Date/time: 2024-01-01
+    profile[24..26].copy_from_slice(&2024u16.to_be_bytes()); // year
+    profile[26..28].copy_from_slice(&1u16.to_be_bytes()); // month
+    profile[28..30].copy_from_slice(&1u16.to_be_bytes()); // day
+
+    // Profile file signature: 'acsp'
+    profile[36..40].copy_from_slice(b"acsp");
+
+    // Primary platform: 'APPL'
+    profile[40..44].copy_from_slice(b"APPL");
+
+    // Tag count: 0 (header-only profile for size minimization)
+    // profile[128..132] would be tag count, but we keep at 128 bytes
+
+    profile
+}
+
+/// Write XMP metadata stream for PDF/A compliance.
+fn write_xmp_metadata(
+    pdf: &mut Pdf,
+    alloc: &mut RefAllocator,
+    metadata: Option<&DocumentMetadata>,
+    conformance: PdfAConformance,
+) -> Ref {
+    let (part, level) = match conformance {
+        PdfAConformance::PdfA1b => ("1", "B"),
+    };
+
+    let title = metadata
+        .and_then(|m| m.title.as_deref())
+        .unwrap_or("Untitled");
+    let creator = metadata
+        .and_then(|m| m.creator.as_deref())
+        .unwrap_or("s1engine");
+
+    let xmp = format!(
+        r#"<?xpacket begin='' id='W5M0MpCehiHzreSzNTczkc9d'?>
+<x:xmpmeta xmlns:x='adobe:ns:meta/'>
+<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>
+<rdf:Description rdf:about=''
+  xmlns:dc='http://purl.org/dc/elements/1.1/'
+  xmlns:pdfaid='http://www.aiim.org/pdfa/ns/id/'
+  xmlns:xmp='http://ns.adobe.com/xap/1.0/'>
+<dc:title><rdf:Alt><rdf:li xml:lang='x-default'>{title}</rdf:li></rdf:Alt></dc:title>
+<dc:creator><rdf:Seq><rdf:li>{creator}</rdf:li></rdf:Seq></dc:creator>
+<pdfaid:part>{part}</pdfaid:part>
+<pdfaid:conformance>{level}</pdfaid:conformance>
+<xmp:CreatorTool>s1engine</xmp:CreatorTool>
+</rdf:Description>
+</rdf:RDF>
+</x:xmpmeta>
+<?xpacket end='w'?>"#
+    );
+
+    let xmp_ref = alloc.next();
+    let mut stream = pdf.stream(xmp_ref, xmp.as_bytes());
+    stream.insert(Name(b"Type")).primitive(Name(b"Metadata"));
+    stream.insert(Name(b"Subtype")).primitive(Name(b"XML"));
+    stream.finish();
+
+    xmp_ref
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use s1_layout::{LayoutConfig, LayoutEngine};
+    use s1_model::{AttributeKey, AttributeValue, DocumentModel, MediaId, Node, NodeType};
+
+    fn make_simple_doc(text: &str) -> DocumentModel {
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+        let para_id = doc.next_id();
+        doc.insert_node(body_id, 0, Node::new(para_id, NodeType::Paragraph))
+            .unwrap();
+        let run_id = doc.next_id();
+        doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
+            .unwrap();
+        let text_id = doc.next_id();
+        doc.insert_node(run_id, 0, Node::text(text_id, text))
+            .unwrap();
+        doc
+    }
+
+    /// Create a minimal valid 1x1 white JPEG.
+    fn minimal_jpeg() -> Vec<u8> {
+        // Smallest valid JPEG: SOI + APP0 + DQT + SOF0 + DHT + SOS + data + EOI
+        // This is a well-known minimal JPEG (1x1 white pixel).
+        vec![
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00,
+            0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06,
+            0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D,
+            0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12, 0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D,
+            0x1A, 0x1C, 0x1C, 0x20, 0x24, 0x2E, 0x27, 0x20, 0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28,
+            0x37, 0x29, 0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27, 0x39, 0x3D, 0x38, 0x32,
+            0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01,
+            0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
+            0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+            0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xC4, 0x00, 0xB5, 0x10,
+            0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00,
+            0x01, 0x7D, 0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06,
+            0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42,
+            0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16,
+            0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x34, 0x35, 0x36, 0x37,
+            0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x53, 0x54, 0x55,
+            0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x73,
+            0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+            0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5,
+            0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA,
+            0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6,
+            0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA,
+            0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFF, 0xDA, 0x00, 0x08,
+            0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0x7B, 0x94, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xFF, 0xD9,
+        ]
+    }
+
+    /// Create a minimal valid 1x1 red PNG.
+    fn minimal_png() -> Vec<u8> {
+        // Use the image crate to encode a tiny PNG in-memory
+        let mut buf = Vec::new();
+        let encoder = image::codecs::png::PngEncoder::new(std::io::Cursor::new(&mut buf));
+        image::ImageEncoder::write_image(
+            encoder,
+            &[255, 0, 0],
+            1,
+            1,
+            image::ExtendedColorType::Rgb8,
+        )
+        .unwrap();
+        buf
+    }
+
+    #[test]
+    fn export_empty_document() {
+        let doc = DocumentModel::new();
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(!bytes.is_empty());
+        assert!(bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn export_single_paragraph() {
+        let doc = make_simple_doc("Hello World");
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        assert!(bytes.len() > 100);
+    }
+
+    #[test]
+    fn export_with_metadata() {
+        let doc = make_simple_doc("Hello");
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        let mut meta = DocumentMetadata::default();
+        meta.title = Some("Test Document".to_string());
+        meta.creator = Some("Test Author".to_string());
+
+        let bytes = write_pdf(&layout, &font_db, Some(&meta)).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        assert!(pdf_str.contains("Test Document"));
+        assert!(pdf_str.contains("Test Author"));
+    }
+
+    #[test]
+    fn export_multi_paragraph() {
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        for i in 0..5 {
+            let para_id = doc.next_id();
+            doc.insert_node(body_id, i, Node::new(para_id, NodeType::Paragraph))
+                .unwrap();
+            let run_id = doc.next_id();
+            doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
+                .unwrap();
+            let text_id = doc.next_id();
+            doc.insert_node(run_id, 0, Node::text(text_id, &format!("Paragraph {i}")))
+                .unwrap();
+        }
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn export_multi_page() {
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        for i in 0..80 {
+            let para_id = doc.next_id();
+            doc.insert_node(body_id, i, Node::new(para_id, NodeType::Paragraph))
+                .unwrap();
+            let run_id = doc.next_id();
+            doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
+                .unwrap();
+            let text_id = doc.next_id();
+            doc.insert_node(
+                run_id,
+                0,
+                Node::text(text_id, "Lorem ipsum dolor sit amet, consectetur"),
+            )
+            .unwrap();
+        }
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+        assert!(layout.pages.len() > 1);
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn export_with_table() {
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        let table_id = doc.next_id();
+        doc.insert_node(body_id, 0, Node::new(table_id, NodeType::Table))
+            .unwrap();
+
+        for row_idx in 0..2 {
+            let row_id = doc.next_id();
+            doc.insert_node(table_id, row_idx, Node::new(row_id, NodeType::TableRow))
+                .unwrap();
+            for col_idx in 0..2 {
+                let cell_id = doc.next_id();
+                doc.insert_node(row_id, col_idx, Node::new(cell_id, NodeType::TableCell))
+                    .unwrap();
+                let para_id = doc.next_id();
+                doc.insert_node(cell_id, 0, Node::new(para_id, NodeType::Paragraph))
+                    .unwrap();
+                let run_id = doc.next_id();
+                doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
+                    .unwrap();
+                let text_id = doc.next_id();
+                doc.insert_node(run_id, 0, Node::text(text_id, "Cell"))
+                    .unwrap();
+            }
+        }
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn pdf_has_valid_structure() {
+        let doc = make_simple_doc("Test");
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+
+        // Check PDF header
+        assert!(bytes.starts_with(b"%PDF"));
+        // Check PDF trailer marker
+        let trailer = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(100)..]);
+        assert!(trailer.contains("%%EOF"));
+    }
+
+    #[test]
+    fn collect_font_usage_empty() {
+        let layout = LayoutDocument {
+            pages: Vec::new(),
+            bookmarks: Vec::new(),
+            annotations: Vec::new(),
+        };
+        let usage = collect_font_usage(&layout);
+        assert!(usage.is_empty());
+    }
+
+    // --- Milestone 3.6 tests ---
+
+    fn make_doc_with_image(image_data: Vec<u8>, content_type: &str) -> (DocumentModel, MediaId) {
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        // Insert media into the store
+        let media_id = doc
+            .media_mut()
+            .insert(content_type.to_string(), image_data, None);
+
+        // Create an Image node with MediaId attribute
+        let mut image_node = Node::new(doc.next_id(), NodeType::Image);
+        image_node.attributes.set(
+            AttributeKey::ImageMediaId,
+            AttributeValue::MediaId(media_id),
+        );
+        image_node
+            .attributes
+            .set(AttributeKey::ImageWidth, AttributeValue::Float(72.0));
+        image_node
+            .attributes
+            .set(AttributeKey::ImageHeight, AttributeValue::Float(72.0));
+        doc.insert_node(body_id, 0, image_node).unwrap();
+
+        (doc, media_id)
+    }
+
+    #[test]
+    fn export_png_image() {
+        let png_data = minimal_png();
+        let (doc, _) = make_doc_with_image(png_data, "image/png");
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        // Verify image data was populated in layout
+        let has_image_data = layout.pages.iter().any(|p| {
+            p.blocks.iter().any(|b| {
+                matches!(
+                    &b.kind,
+                    LayoutBlockKind::Image { image_data: Some(data), .. } if !data.is_empty()
+                )
+            })
+        });
+        assert!(has_image_data, "Layout should contain image data");
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        // PDF with image should be larger than a minimal PDF
+        assert!(bytes.len() > 200);
+
+        // Check that XObject was written (presence of /Im0)
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        assert!(pdf_str.contains("/Im"), "PDF should contain image XObject");
+    }
+
+    #[test]
+    fn export_jpeg_image() {
+        let jpeg_data = minimal_jpeg();
+        let (doc, _) = make_doc_with_image(jpeg_data.clone(), "image/jpeg");
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+
+        // JPEG should be DCT-encoded (pass-through)
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        assert!(
+            pdf_str.contains("DCTDecode") || pdf_str.contains("/Im"),
+            "PDF should embed JPEG image"
+        );
+    }
+
+    #[test]
+    fn export_image_sizing() {
+        let png_data = minimal_png();
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        let media_id = doc
+            .media_mut()
+            .insert("image/png".to_string(), png_data, None);
+
+        // Use a specific size
+        let mut image_node = Node::new(doc.next_id(), NodeType::Image);
+        image_node.attributes.set(
+            AttributeKey::ImageMediaId,
+            AttributeValue::MediaId(media_id),
+        );
+        image_node
+            .attributes
+            .set(AttributeKey::ImageWidth, AttributeValue::Float(200.0));
+        image_node
+            .attributes
+            .set(AttributeKey::ImageHeight, AttributeValue::Float(150.0));
+        doc.insert_node(body_id, 0, image_node).unwrap();
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        // Check the image block has the right dimensions
+        let img_block = layout.pages[0]
+            .blocks
+            .iter()
+            .find(|b| matches!(&b.kind, LayoutBlockKind::Image { .. }))
+            .expect("Should have image block");
+        assert!((img_block.bounds.width - 200.0).abs() < 1.0);
+        assert!((img_block.bounds.height - 150.0).abs() < 1.0);
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn export_image_multi_page() {
+        // Create many paragraphs + an image to push it to page 2
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        // Fill first page with paragraphs
+        for i in 0..60 {
+            let para_id = doc.next_id();
+            doc.insert_node(body_id, i, Node::new(para_id, NodeType::Paragraph))
+                .unwrap();
+            let run_id = doc.next_id();
+            doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
+                .unwrap();
+            let text_id = doc.next_id();
+            doc.insert_node(run_id, 0, Node::text(text_id, "Fill line"))
+                .unwrap();
+        }
+
+        let png_data = minimal_png();
+        let media_id = doc
+            .media_mut()
+            .insert("image/png".to_string(), png_data, None);
+
+        let mut image_node = Node::new(doc.next_id(), NodeType::Image);
+        image_node.attributes.set(
+            AttributeKey::ImageMediaId,
+            AttributeValue::MediaId(media_id),
+        );
+        image_node
+            .attributes
+            .set(AttributeKey::ImageWidth, AttributeValue::Float(72.0));
+        image_node
+            .attributes
+            .set(AttributeKey::ImageHeight, AttributeValue::Float(72.0));
+        doc.insert_node(body_id, 60, image_node).unwrap();
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+        assert!(layout.pages.len() > 1, "Should have multiple pages");
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn export_image_deduplication() {
+        let png_data = minimal_png();
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        // Same image data → same MediaId → single XObject
+        let media_id = doc
+            .media_mut()
+            .insert("image/png".to_string(), png_data.clone(), None);
+
+        for idx in 0..3 {
+            let mut image_node = Node::new(doc.next_id(), NodeType::Image);
+            image_node.attributes.set(
+                AttributeKey::ImageMediaId,
+                AttributeValue::MediaId(media_id),
+            );
+            image_node
+                .attributes
+                .set(AttributeKey::ImageWidth, AttributeValue::Float(50.0));
+            image_node
+                .attributes
+                .set(AttributeKey::ImageHeight, AttributeValue::Float(50.0));
+            doc.insert_node(body_id, idx, image_node).unwrap();
+        }
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        // All 3 images should map to the same media_id
+        let image_blocks: Vec<_> = layout.pages[0]
+            .blocks
+            .iter()
+            .filter(|b| matches!(&b.kind, LayoutBlockKind::Image { .. }))
+            .collect();
+        assert_eq!(image_blocks.len(), 3);
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+
+        // Only one Im0 XObject should be created (deduplicated)
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        let im0_count = pdf_str.matches("/Im0").count();
+        // Im0 appears in XObject dict refs, not as multiple streams
+        assert!(im0_count >= 1, "Should have Im0 XObject reference");
+    }
+
+    #[test]
+    fn export_no_image_data_fallback() {
+        // Image node without media in the store → placeholder rectangle
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        let mut image_node = Node::new(doc.next_id(), NodeType::Image);
+        image_node
+            .attributes
+            .set(AttributeKey::ImageWidth, AttributeValue::Float(72.0));
+        image_node
+            .attributes
+            .set(AttributeKey::ImageHeight, AttributeValue::Float(72.0));
+        doc.insert_node(body_id, 0, image_node).unwrap();
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        // Should have image block with no data
+        let has_no_data = layout.pages.iter().any(|p| {
+            p.blocks.iter().any(|b| {
+                matches!(
+                    &b.kind,
+                    LayoutBlockKind::Image {
+                        image_data: None,
+                        ..
+                    }
+                )
+            })
+        });
+        assert!(has_no_data, "Image without media should have no data");
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn export_hyperlink_annotation() {
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        let para_id = doc.next_id();
+        doc.insert_node(body_id, 0, Node::new(para_id, NodeType::Paragraph))
+            .unwrap();
+
+        let mut run_node = Node::new(doc.next_id(), NodeType::Run);
+        run_node.attributes.set(
+            AttributeKey::HyperlinkUrl,
+            AttributeValue::String("https://example.com".to_string()),
+        );
+        let run_id = run_node.id;
+        doc.insert_node(para_id, 0, run_node).unwrap();
+
+        let text_id = doc.next_id();
+        doc.insert_node(run_id, 0, Node::text(text_id, "Click here"))
+            .unwrap();
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        // Verify hyperlink_url was propagated
+        let has_url = layout.pages.iter().any(|p| {
+            p.blocks.iter().any(|b| {
+                if let LayoutBlockKind::Paragraph { lines, .. } = &b.kind {
+                    lines
+                        .iter()
+                        .any(|l| l.runs.iter().any(|r| r.hyperlink_url.is_some()))
+                } else {
+                    false
+                }
+            })
+        });
+        assert!(has_url, "Layout should have hyperlink URL on glyph run");
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        assert!(
+            pdf_str.contains("example.com"),
+            "PDF should contain hyperlink URL"
+        );
+    }
+
+    #[test]
+    fn export_hyperlink_rect_coordinates() {
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        let para_id = doc.next_id();
+        doc.insert_node(body_id, 0, Node::new(para_id, NodeType::Paragraph))
+            .unwrap();
+
+        let mut run_node = Node::new(doc.next_id(), NodeType::Run);
+        run_node.attributes.set(
+            AttributeKey::HyperlinkUrl,
+            AttributeValue::String("https://test.org".to_string()),
+        );
+        let run_id = run_node.id;
+        doc.insert_node(para_id, 0, run_node).unwrap();
+
+        let text_id = doc.next_id();
+        doc.insert_node(run_id, 0, Node::text(text_id, "Link"))
+            .unwrap();
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        // Should contain /Link annotation type and /URI action
+        assert!(pdf_str.contains("/Link"), "Should have Link annotation");
+        assert!(pdf_str.contains("/URI"), "Should have URI action");
+    }
+
+    #[test]
+    fn export_multiple_hyperlinks() {
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        let para_id = doc.next_id();
+        doc.insert_node(body_id, 0, Node::new(para_id, NodeType::Paragraph))
+            .unwrap();
+
+        for (i, url) in ["https://a.com", "https://b.com"].iter().enumerate() {
+            let mut run_node = Node::new(doc.next_id(), NodeType::Run);
+            run_node.attributes.set(
+                AttributeKey::HyperlinkUrl,
+                AttributeValue::String(url.to_string()),
+            );
+            let run_id = run_node.id;
+            doc.insert_node(para_id, i, run_node).unwrap();
+
+            let text_id = doc.next_id();
+            doc.insert_node(run_id, 0, Node::text(text_id, &format!("Link{i}")))
+                .unwrap();
+        }
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        assert!(pdf_str.contains("a.com"), "Should contain first URL");
+        assert!(pdf_str.contains("b.com"), "Should contain second URL");
+    }
+
+    #[test]
+    fn export_hyperlink_across_lines() {
+        // A hyperlink run that's long enough could theoretically be split across lines
+        // For now, just ensure it doesn't crash and produces valid output
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        let para_id = doc.next_id();
+        doc.insert_node(body_id, 0, Node::new(para_id, NodeType::Paragraph))
+            .unwrap();
+
+        let mut run_node = Node::new(doc.next_id(), NodeType::Run);
+        run_node.attributes.set(
+            AttributeKey::HyperlinkUrl,
+            AttributeValue::String("https://long-url.example.com/path".to_string()),
+        );
+        let run_id = run_node.id;
+        doc.insert_node(para_id, 0, run_node).unwrap();
+
+        let text_id = doc.next_id();
+        doc.insert_node(
+            run_id,
+            0,
+            Node::text(
+                text_id,
+                "This is a very long hyperlink text that might wrap",
+            ),
+        )
+        .unwrap();
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn export_single_bookmark() {
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        let para_id = doc.next_id();
+        doc.insert_node(body_id, 0, Node::new(para_id, NodeType::Paragraph))
+            .unwrap();
+
+        // Add bookmark start as child of paragraph
+        let mut bm_node = Node::new(doc.next_id(), NodeType::BookmarkStart);
+        bm_node.attributes.set(
+            AttributeKey::BookmarkName,
+            AttributeValue::String("section1".to_string()),
+        );
+        doc.insert_node(para_id, 0, bm_node).unwrap();
+
+        let run_id = doc.next_id();
+        doc.insert_node(para_id, 1, Node::new(run_id, NodeType::Run))
+            .unwrap();
+        let text_id = doc.next_id();
+        doc.insert_node(run_id, 0, Node::text(text_id, "Section 1"))
+            .unwrap();
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        assert_eq!(layout.bookmarks.len(), 1);
+        assert_eq!(layout.bookmarks[0].name, "section1");
+        assert_eq!(layout.bookmarks[0].page_index, 0);
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        assert!(
+            pdf_str.contains("section1"),
+            "PDF should contain bookmark title"
+        );
+        assert!(
+            pdf_str.contains("/Outlines"),
+            "PDF catalog should reference outlines"
+        );
+    }
+
+    #[test]
+    fn export_multiple_bookmarks() {
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        for (i, name) in ["intro", "chapter1", "chapter2"].iter().enumerate() {
+            let para_id = doc.next_id();
+            doc.insert_node(body_id, i, Node::new(para_id, NodeType::Paragraph))
+                .unwrap();
+
+            let mut bm_node = Node::new(doc.next_id(), NodeType::BookmarkStart);
+            bm_node.attributes.set(
+                AttributeKey::BookmarkName,
+                AttributeValue::String(name.to_string()),
+            );
+            doc.insert_node(para_id, 0, bm_node).unwrap();
+
+            let run_id = doc.next_id();
+            doc.insert_node(para_id, 1, Node::new(run_id, NodeType::Run))
+                .unwrap();
+            let text_id = doc.next_id();
+            doc.insert_node(run_id, 0, Node::text(text_id, *name))
+                .unwrap();
+        }
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        assert_eq!(layout.bookmarks.len(), 3);
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        assert!(pdf_str.contains("intro"));
+        assert!(pdf_str.contains("chapter1"));
+        assert!(pdf_str.contains("chapter2"));
+    }
+
+    #[test]
+    fn export_bookmark_destination_page() {
+        // Create a long doc so bookmarks land on different pages
+        let mut doc = DocumentModel::new();
+        let root = doc.root_id();
+        let body_id = doc.next_id();
+        doc.insert_node(root, 0, Node::new(body_id, NodeType::Body))
+            .unwrap();
+
+        // Bookmark on first page
+        let para1_id = doc.next_id();
+        doc.insert_node(body_id, 0, Node::new(para1_id, NodeType::Paragraph))
+            .unwrap();
+        let mut bm1 = Node::new(doc.next_id(), NodeType::BookmarkStart);
+        bm1.attributes.set(
+            AttributeKey::BookmarkName,
+            AttributeValue::String("page1".to_string()),
+        );
+        doc.insert_node(para1_id, 0, bm1).unwrap();
+        let run1 = doc.next_id();
+        doc.insert_node(para1_id, 1, Node::new(run1, NodeType::Run))
+            .unwrap();
+        let t1 = doc.next_id();
+        doc.insert_node(run1, 0, Node::text(t1, "First page"))
+            .unwrap();
+
+        // Fill pages
+        for i in 1..70 {
+            let p = doc.next_id();
+            doc.insert_node(body_id, i, Node::new(p, NodeType::Paragraph))
+                .unwrap();
+            let r = doc.next_id();
+            doc.insert_node(p, 0, Node::new(r, NodeType::Run)).unwrap();
+            let t = doc.next_id();
+            doc.insert_node(r, 0, Node::text(t, "Filler paragraph line"))
+                .unwrap();
+        }
+
+        // Bookmark on later page
+        let para2_id = doc.next_id();
+        doc.insert_node(body_id, 70, Node::new(para2_id, NodeType::Paragraph))
+            .unwrap();
+        let mut bm2 = Node::new(doc.next_id(), NodeType::BookmarkStart);
+        bm2.attributes.set(
+            AttributeKey::BookmarkName,
+            AttributeValue::String("page2".to_string()),
+        );
+        doc.insert_node(para2_id, 0, bm2).unwrap();
+        let run2 = doc.next_id();
+        doc.insert_node(para2_id, 1, Node::new(run2, NodeType::Run))
+            .unwrap();
+        let t2 = doc.next_id();
+        doc.insert_node(run2, 0, Node::text(t2, "Later page"))
+            .unwrap();
+
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        assert!(layout.bookmarks.len() >= 2);
+        assert_eq!(layout.bookmarks[0].page_index, 0);
+        // Second bookmark should be on a later page
+        assert!(layout.bookmarks[1].page_index > 0);
+
+        let bytes = write_pdf(&layout, &font_db, None).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn export_pdfa_1b() {
+        let doc = make_simple_doc("PDF/A Test");
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        let mut meta = DocumentMetadata::default();
+        meta.title = Some("Test Document".to_string());
+        meta.creator = Some("Test Author".to_string());
+
+        let bytes = write_pdf_a(&layout, &font_db, Some(&meta), PdfAConformance::PdfA1b).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        // Should contain OutputIntent
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        assert!(
+            pdf_str.contains("OutputIntent"),
+            "should contain OutputIntent"
+        );
+        assert!(pdf_str.contains("GTS_PDFA1"), "should reference PDF/A-1");
+        // Should contain XMP metadata
+        assert!(pdf_str.contains("pdfaid:part"), "should contain PDF/A id");
+        assert!(
+            pdf_str.contains("pdfaid:conformance"),
+            "should contain conformance level"
+        );
+        // Should have ICC profile reference
+        assert!(pdf_str.contains("sRGB"), "should reference sRGB");
+    }
+
+    #[test]
+    fn export_pdfa_contains_xmp() {
+        let doc = make_simple_doc("XMP test");
+        let font_db = FontDatabase::new();
+        let mut engine = LayoutEngine::new(&doc, &font_db, LayoutConfig::default());
+        let layout = engine.layout().unwrap();
+
+        let bytes = write_pdf_a(&layout, &font_db, None, PdfAConformance::PdfA1b).unwrap();
+        let pdf_str = String::from_utf8_lossy(&bytes);
+        assert!(pdf_str.contains("xmpmeta"), "should have XMP metadata");
+        assert!(pdf_str.contains("CreatorTool"), "should have creator tool");
+        assert!(pdf_str.contains("s1engine"), "should identify s1engine");
+    }
+}

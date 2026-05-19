@@ -1,0 +1,127 @@
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf9;
+  --fg: #1c1917;
+  --muted: #57534e;
+  --accent: #1e293b;
+  --card: #ffffff;
+  --border: #e7e5e4;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0a09;
+    --fg: #f5f5f4;
+    --muted: #a8a29e;
+    --accent: #e7e5e4;
+    --card: #1c1917;
+    --border: #292524;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  min-height: 100vh;
+}
+main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 4rem 1.5rem 2rem;
+}
+header h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.tagline {
+  margin: 0.5rem 0 2rem;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.tagline a { color: inherit; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 2.5rem 1rem;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.dropzone:hover,
+.dropzone.is-drag {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--card) 92%, var(--accent) 8%);
+}
+.dropzone strong { font-weight: 600; }
+.dropzone span { color: var(--muted); font-size: 0.9rem; }
+
+.controls {
+  margin-top: 1.25rem;
+  display: grid;
+  gap: 0.75rem;
+}
+.controls .row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.controls code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: color-mix(in srgb, var(--card) 80%, var(--accent) 20%);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+select, button {
+  font: inherit;
+  padding: 0.45rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: inherit;
+  cursor: pointer;
+}
+button {
+  background: var(--fg);
+  color: var(--bg);
+  border-color: transparent;
+  font-weight: 500;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+output {
+  display: block;
+  margin-top: 1rem;
+  min-height: 1.5em;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+output.error { color: #dc2626; }
+
+footer {
+  margin-top: 3rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: center;
+}
+footer a { color: inherit; }

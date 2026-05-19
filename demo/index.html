@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Casual Core — document converter</title>
+    <meta
+      name="description"
+      content="Drop a DOCX, ODT, PDF, Markdown or text file in your browser and convert it locally with Casual Core."
+    />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Casual Core</h1>
+        <p class="tagline">
+          Document conversion that runs entirely in your browser, powered by
+          WebAssembly. Part of the
+          <a href="https://schnsrw.live">Casual Office</a> suite.
+        </p>
+      </header>
+
+      <section id="drop" class="card">
+        <label for="file" class="dropzone">
+          <strong>Drop a file</strong>
+          <span>or click to pick — DOCX, ODT, PDF, MD, TXT</span>
+          <input id="file" type="file" hidden />
+        </label>
+
+        <div class="controls" hidden id="controls">
+          <div class="row">
+            <span>From</span>
+            <code id="detected">—</code>
+          </div>
+          <div class="row">
+            <label for="target">To</label>
+            <select id="target">
+              <option value="pdf">PDF</option>
+              <option value="docx">DOCX</option>
+              <option value="odt">ODT</option>
+              <option value="md">Markdown</option>
+              <option value="txt">Plain text</option>
+            </select>
+          </div>
+          <button id="convert" type="button">Convert</button>
+        </div>
+
+        <output id="status" aria-live="polite"></output>
+      </section>
+
+      <footer>
+        <a href="https://github.com/schnsrw/core">github.com/schnsrw/core</a>
+        · Apache-2.0
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,496 @@
+//! Layout output types.
+//!
+//! These represent the fully laid-out document ready for rendering or PDF export.
+
+use std::collections::HashMap;
+
+use s1_model::{Color, NodeId};
+use s1_text::{FontId, ShapedGlyph};
+
+/// A fully laid-out document with pages.
+#[derive(Debug, Clone)]
+pub struct LayoutDocument {
+    /// Pages in document order.
+    pub pages: Vec<LayoutPage>,
+    /// Bookmarks with resolved page positions.
+    pub bookmarks: Vec<LayoutBookmark>,
+    /// Annotations (comments, highlights) with resolved page positions.
+    pub annotations: Vec<LayoutAnnotation>,
+}
+
+/// A bookmark with its resolved position in the laid-out document.
+#[derive(Debug, Clone)]
+pub struct LayoutBookmark {
+    /// Bookmark name.
+    pub name: String,
+    /// 0-based page index where this bookmark appears.
+    pub page_index: usize,
+    /// Y position on the page (in points from top).
+    pub y_position: f64,
+}
+
+/// The type of a layout annotation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LayoutAnnotationType {
+    /// A document comment (sticky note).
+    Comment,
+    /// A text highlight.
+    Highlight,
+}
+
+/// An annotation with its resolved position in the laid-out document.
+///
+/// Produced by scanning `CommentStart`/`CommentEnd` nodes and highlight
+/// formatting in the document model after layout is complete.
+#[derive(Debug, Clone)]
+pub struct LayoutAnnotation {
+    /// Annotation type.
+    pub annotation_type: LayoutAnnotationType,
+    /// Source node ID (e.g., CommentStart node).
+    pub source_id: NodeId,
+    /// 0-based page index where this annotation starts.
+    pub page_index: usize,
+    /// Bounding rectangles on the page (in points from top-left).
+    /// A comment may span multiple lines, producing multiple rects.
+    pub rects: Vec<Rect>,
+    /// Comment or annotation text content.
+    pub content: String,
+    /// Author name.
+    pub author: String,
+    /// Date string (ISO 8601 or similar).
+    pub date: String,
+    /// Optional highlight/annotation color.
+    pub color: Option<Color>,
+}
+
+/// A single laid-out page.
+#[derive(Debug, Clone)]
+pub struct LayoutPage {
+    /// 0-based page index.
+    pub index: usize,
+    /// Page width in points.
+    pub width: f64,
+    /// Page height in points.
+    pub height: f64,
+    /// Content area after margins.
+    pub content_area: Rect,
+    /// Content blocks on this page.
+    pub blocks: Vec<LayoutBlock>,
+    /// Header content (if any).
+    pub header: Option<LayoutBlock>,
+    /// Footer content (if any).
+    pub footer: Option<LayoutBlock>,
+    /// Footnote blocks laid out at the bottom of the page.
+    pub footnotes: Vec<LayoutBlock>,
+    /// Floating images positioned absolutely on this page.
+    pub floating_images: Vec<LayoutBlock>,
+    /// 0-based section index this page belongs to.
+    pub section_index: usize,
+}
+
+/// A positioned block element (paragraph, table, or image).
+#[derive(Debug, Clone)]
+pub struct LayoutBlock {
+    /// Reference back to the source document node.
+    pub source_id: NodeId,
+    /// Position and size in the page coordinate system.
+    pub bounds: Rect,
+    /// Block content.
+    pub kind: LayoutBlockKind,
+}
+
+/// The kind of a layout block.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum LayoutBlockKind {
+    /// A paragraph with broken lines.
+    Paragraph {
+        /// Lines of text.
+        lines: Vec<LayoutLine>,
+        /// Text alignment (CSS text-align value).
+        text_align: Option<String>,
+        /// Paragraph background color.
+        background_color: Option<Color>,
+        /// Paragraph border (CSS border shorthand).
+        border: Option<String>,
+        /// List marker text (e.g., "•", "1.", "a.") if this paragraph is a list item.
+        list_marker: Option<String>,
+        /// List indent level (0-based).
+        list_level: u8,
+        /// Space before paragraph in points.
+        space_before: f64,
+        /// Space after paragraph in points.
+        space_after: f64,
+        /// Left indent in points.
+        indent_left: f64,
+        /// Right indent in points.
+        indent_right: f64,
+        /// First-line indent in points.
+        indent_first_line: f64,
+        /// Line height as a CSS-compatible value (e.g., 1.15 for 115%).
+        line_height: Option<f64>,
+        /// Whether this paragraph has right-to-left (BiDi) direction.
+        bidi: bool,
+        /// Whether this block is a continuation of a split paragraph from a previous page.
+        ///
+        /// When a paragraph is too tall to fit on a single page, the layout engine
+        /// splits it at a line boundary. The first part stays on the current page
+        /// (with `is_continuation: false`) and the second part goes on the next page
+        /// (with `is_continuation: true`). The renderer uses this to avoid repeating
+        /// list markers, first-line indent, and space-before on the continuation.
+        is_continuation: bool,
+        /// The line index at which this paragraph was split from the original.
+        ///
+        /// For the first part of a split paragraph, this is the number of lines
+        /// kept on the current page (i.e., the split point). For a continuation
+        /// block, this is the line index in the original paragraph where the
+        /// continuation starts. `0` means no split occurred.
+        split_at_line: usize,
+    },
+    /// A table with rows.
+    Table {
+        /// Table rows with cells.
+        rows: Vec<LayoutTableRow>,
+        /// Whether this table is a continuation from a previous page.
+        is_continuation: bool,
+    },
+    /// An inline image.
+    Image {
+        /// Image data reference.
+        media_id: String,
+        /// Image bounds.
+        bounds: Rect,
+        /// Raw image bytes (populated during layout from MediaStore).
+        image_data: Option<Vec<u8>>,
+        /// MIME content type (e.g., "image/png", "image/jpeg").
+        content_type: Option<String>,
+    },
+}
+
+/// A line of text within a paragraph.
+#[derive(Debug, Clone)]
+pub struct LayoutLine {
+    /// Y position of the baseline (relative to the block).
+    pub baseline_y: f64,
+    /// Line height.
+    pub height: f64,
+    /// Glyph runs on this line.
+    pub runs: Vec<GlyphRun>,
+}
+
+/// An inline image within a glyph run.
+#[derive(Debug, Clone)]
+pub struct InlineImage {
+    /// Media ID reference.
+    pub media_id: String,
+    /// Image width in points.
+    pub width: f64,
+    /// Image height in points.
+    pub height: f64,
+    /// Raw image bytes.
+    pub image_data: Option<Vec<u8>>,
+    /// MIME content type (e.g., "image/png", "image/jpeg").
+    pub content_type: Option<String>,
+}
+
+/// A contiguous run of glyphs with uniform formatting.
+#[derive(Debug, Clone)]
+pub struct GlyphRun {
+    /// Reference to the source Run node.
+    pub source_id: NodeId,
+    /// Font used for this run.
+    pub font_id: FontId,
+    /// Font family name (for CSS output).
+    pub font_family: String,
+    /// Font size in points.
+    pub font_size: f64,
+    /// Text color.
+    pub color: Color,
+    /// X offset of this run from the line start.
+    pub x_offset: f64,
+    /// Positioned glyphs.
+    pub glyphs: Vec<ShapedGlyph>,
+    /// Total advance width of this run.
+    pub width: f64,
+    /// Hyperlink URL if this run is part of a hyperlink.
+    pub hyperlink_url: Option<String>,
+    /// The original text content of this run (before shaping).
+    pub text: String,
+    /// Whether this run is bold.
+    pub bold: bool,
+    /// Whether this run is italic.
+    pub italic: bool,
+    /// Whether this run is underlined.
+    pub underline: bool,
+    /// Whether this run has strikethrough.
+    pub strikethrough: bool,
+    /// Whether this run is superscript.
+    pub superscript: bool,
+    /// Whether this run is subscript.
+    pub subscript: bool,
+    /// Highlight/background color.
+    pub highlight_color: Option<Color>,
+    /// Character spacing in points (letter-spacing).
+    pub character_spacing: f64,
+    /// Revision type for track changes (e.g., "insertion", "deletion").
+    pub revision_type: Option<String>,
+    /// Revision author for track changes.
+    pub revision_author: Option<String>,
+    /// Inline image data, if this run represents an inline image.
+    pub inline_image: Option<InlineImage>,
+}
+
+/// A table row in the layout.
+#[derive(Debug, Clone)]
+pub struct LayoutTableRow {
+    /// Row bounds relative to the table block.
+    pub bounds: Rect,
+    /// Cells in this row.
+    pub cells: Vec<LayoutTableCell>,
+    /// Whether this row is a header row that repeats on continuation pages.
+    pub is_header_row: bool,
+    /// Source row node ID from the document model.
+    pub source_id: NodeId,
+}
+
+/// A table cell in the layout.
+#[derive(Debug, Clone)]
+pub struct LayoutTableCell {
+    /// Cell bounds relative to the row.
+    pub bounds: Rect,
+    /// Content blocks inside the cell.
+    pub blocks: Vec<LayoutBlock>,
+    /// Cell background color (if any).
+    pub background_color: Option<Color>,
+    /// Cell border top (CSS border string).
+    pub border_top: Option<String>,
+    /// Cell border bottom (CSS border string).
+    pub border_bottom: Option<String>,
+    /// Cell border left (CSS border string).
+    pub border_left: Option<String>,
+    /// Cell border right (CSS border string).
+    pub border_right: Option<String>,
+}
+
+/// Text wrap type for floating images.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrapType {
+    /// No wrapping (image behind or in front of text).
+    None,
+    /// Text wraps around rectangular bounding box.
+    Square,
+    /// Text wraps tightly around the image shape.
+    Tight,
+    /// Text wraps through the image.
+    Through,
+    /// No text beside the image — text above and below only.
+    TopAndBottom,
+}
+
+/// A floating image's exclusion zone for text wrapping.
+#[derive(Debug, Clone, Copy)]
+pub struct FloatingImageRect {
+    /// Absolute bounds on the page (in points).
+    pub bounds: Rect,
+    /// Wrap type.
+    pub wrap_type: WrapType,
+    /// Distance from text — top, in points.
+    pub dist_top: f64,
+    /// Distance from text — bottom, in points.
+    pub dist_bottom: f64,
+    /// Distance from text — left, in points.
+    pub dist_left: f64,
+    /// Distance from text — right, in points.
+    pub dist_right: f64,
+}
+
+impl FloatingImageRect {
+    /// The exclusion zone including distance-from-text padding.
+    pub fn exclusion_rect(&self) -> Rect {
+        Rect::new(
+            self.bounds.x - self.dist_left,
+            self.bounds.y - self.dist_top,
+            self.bounds.width + self.dist_left + self.dist_right,
+            self.bounds.height + self.dist_top + self.dist_bottom,
+        )
+    }
+
+    /// Check if this float's exclusion zone overlaps a vertical range.
+    pub fn overlaps_y(&self, y_top: f64, y_bottom: f64) -> bool {
+        let ex = self.exclusion_rect();
+        ex.y < y_bottom && ex.bottom() > y_top
+    }
+}
+
+/// A rectangle with position and size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rect {
+    /// X position (from left).
+    pub x: f64,
+    /// Y position (from top).
+    pub y: f64,
+    /// Width.
+    pub width: f64,
+    /// Height.
+    pub height: f64,
+}
+
+impl Rect {
+    /// Create a new rectangle.
+    pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// The right edge (x + width).
+    pub fn right(&self) -> f64 {
+        self.x + self.width
+    }
+
+    /// The bottom edge (y + height).
+    pub fn bottom(&self) -> f64 {
+        self.y + self.height
+    }
+}
+
+/// Page dimensions and margins.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageLayout {
+    /// Page width in points.
+    pub width: f64,
+    /// Page height in points.
+    pub height: f64,
+    /// Top margin in points.
+    pub margin_top: f64,
+    /// Bottom margin in points.
+    pub margin_bottom: f64,
+    /// Left margin in points.
+    pub margin_left: f64,
+    /// Right margin in points.
+    pub margin_right: f64,
+}
+
+impl PageLayout {
+    /// US Letter default (8.5" × 11" with 1" margins).
+    pub fn letter() -> Self {
+        Self {
+            width: 612.0,  // 8.5 * 72
+            height: 792.0, // 11 * 72
+            margin_top: 72.0,
+            margin_bottom: 72.0,
+            margin_left: 72.0,
+            margin_right: 72.0,
+        }
+    }
+
+    /// A4 default (210mm × 297mm with ~1" margins).
+    pub fn a4() -> Self {
+        Self {
+            width: 595.28,  // 210mm in points
+            height: 841.89, // 297mm in points
+            margin_top: 72.0,
+            margin_bottom: 72.0,
+            margin_left: 72.0,
+            margin_right: 72.0,
+        }
+    }
+
+    /// Available content width.
+    pub fn content_width(&self) -> f64 {
+        self.width - self.margin_left - self.margin_right
+    }
+
+    /// Available content height.
+    pub fn content_height(&self) -> f64 {
+        self.height - self.margin_top - self.margin_bottom
+    }
+
+    /// Content area rectangle.
+    pub fn content_rect(&self) -> Rect {
+        Rect::new(
+            self.margin_left,
+            self.margin_top,
+            self.content_width(),
+            self.content_height(),
+        )
+    }
+}
+
+impl Default for PageLayout {
+    fn default() -> Self {
+        Self::letter()
+    }
+}
+
+/// Cache for incremental layout.
+///
+/// Stores previously computed block layouts keyed by `(NodeId, content_hash)`.
+/// When a block's content hash matches the cached value, the expensive text
+/// shaping and line breaking are skipped. Pagination still runs from scratch
+/// because one changed paragraph shifts all subsequent pages.
+#[derive(Debug, Clone, Default)]
+pub struct LayoutCache {
+    entries: HashMap<NodeId, CacheEntry>,
+}
+
+/// A single cache entry mapping a content hash to a laid-out block.
+#[derive(Debug, Clone)]
+struct CacheEntry {
+    /// Content hash at the time the block was laid out.
+    content_hash: u64,
+    /// The cached layout block (position-independent — bounds.y will be overwritten).
+    block: LayoutBlock,
+}
+
+impl LayoutCache {
+    /// Create a new empty cache.
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Look up a cached block for the given node ID and content hash.
+    ///
+    /// Returns `Some(&LayoutBlock)` if the cache has an entry with a matching hash.
+    pub fn get(&self, node_id: NodeId, content_hash: u64) -> Option<&LayoutBlock> {
+        self.entries.get(&node_id).and_then(|entry| {
+            if entry.content_hash == content_hash {
+                Some(&entry.block)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Insert or update a cached block for the given node ID.
+    pub fn insert(&mut self, node_id: NodeId, content_hash: u64, block: LayoutBlock) {
+        self.entries.insert(
+            node_id,
+            CacheEntry {
+                content_hash,
+                block,
+            },
+        );
+    }
+
+    /// Number of entries in the cache.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns true if the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Clear all cache entries.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
