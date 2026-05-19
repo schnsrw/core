@@ -35,7 +35,8 @@ async function handleFile(file: File) {
   currentName = file.name.replace(/\.[^.]+$/, "");
   const buf = await file.arrayBuffer();
   currentBytes = new Uint8Array(buf);
-  const detected = detectFormat(currentBytes);
+  await init();
+  const detected = await detectFormat(currentBytes);
   currentFormat = detected.format;
   detectedEl.textContent = detected.format ?? "unknown";
   controls.hidden = false;

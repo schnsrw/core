@@ -3,8 +3,8 @@
 > Document engine for the [Casual Office](https://schnsrw.live) suite.
 
 A pure-Rust engine that reads, writes, and converts office documents — DOCX,
-ODT, PDF, Markdown, plain text — with bindings for WebAssembly (browser, Node,
-Bun, Deno) and C.
+ODT, PDF, Markdown, plain text — with WebAssembly and C FFI bindings for use
+from any consuming app.
 
 Casual Core sits underneath everything in Casual Office:
 
@@ -14,7 +14,7 @@ Casual Core sits underneath everything in Casual Office:
 
 ## Status
 
-`v0.1.0` · pre-release · workspace builds and passes 1,200+ tests on CI.
+`v0.1.0` · pre-release · workspace builds and passes the test suite on CI.
 
 | Format | Read | Write |
 | --- | --- | --- |
@@ -24,28 +24,7 @@ Casual Core sits underneath everything in Casual Office:
 | Plain text | ✓ | ✓ |
 | PDF  | – | ✓ (export only) |
 
-## Repo layout
-
-```
-crates/        Pure-Rust workspace
-  s1-model       Zero-dep document AST
-  s1-ops         Operations, transactions, undo
-  s1-format-*    Per-format readers/writers
-  s1-convert     Cross-format conversion pipelines
-  s1-layout      Layout / pagination engine
-  s1-text        Text shaping (rustybuzz, ttf-parser, fontdb)
-  s1engine       Facade crate
-ffi/
-  wasm           wasm-bindgen bindings
-  c              C FFI (cbindgen)
-js/            @schnsrw/core — TypeScript layer over the WASM build
-demo/          GitHub Pages demo (drop-in file converter)
-fuzz/          cargo-fuzz harnesses
-tests/         Workspace-level integration + fidelity tests
-testdocs/      Real-world fixture documents
-```
-
-## Use it from JavaScript
+## Quick start — JavaScript
 
 ```bash
 npm install @schnsrw/core
@@ -55,14 +34,13 @@ npm install @schnsrw/core
 import { init, convert } from "@schnsrw/core";
 
 await init();
-
 const docx = await fetch("/cv.docx").then((r) => r.arrayBuffer());
-const pdf  = await convert(new Uint8Array(docx), { from: "docx", to: "pdf" });
+const pdf  = await convert(new Uint8Array(docx), { to: "pdf" });
 ```
 
-See [`js/README.md`](js/README.md) for the full API.
+The full JS surface (five functions) is in [`docs/api.md`](docs/api.md).
 
-## Use it from Rust
+## Quick start — Rust
 
 ```toml
 [dependencies]
@@ -70,38 +48,65 @@ s1engine = "0.1"
 ```
 
 ```rust
-use s1engine::Engine;
+use s1engine::{Engine, Format};
 
 let engine = Engine::new();
 let doc = engine.open(&bytes_in)?;
-let pdf = doc.export_pdf()?;
+let pdf = doc.export(Format::Pdf)?;
 ```
+
+## Repo layout
+
+```
+crates/        Pure-Rust workspace
+  s1-model       Zero-dep document AST
+  s1-ops         Operations / transactions / undo (internal)
+  s1-format-*    Per-format readers and writers
+  s1-convert     Cross-format conversion + legacy .doc reader
+  s1-layout      Layout / pagination (used by PDF export)
+  s1-text        Text shaping (rustybuzz, ttf-parser, fontdb)
+  s1engine       Facade crate
+ffi/
+  wasm           wasm-bindgen bindings — minimal converter API
+  c              C FFI bindings
+js/            @schnsrw/core — TypeScript wrapper over the WASM
+demo/          GitHub Pages reference demo
+docs/          Requirements, architecture, roadmap, API, fidelity policy
+fuzz/          cargo-fuzz harnesses
+tests/         Workspace-level integration + fidelity tests
+testdocs/      Real-world fixture documents
+```
+
+## Documentation
+
+Start here:
+
+- [`docs/requirements.md`](docs/requirements.md) — what Casual Core is for
+- [`docs/architecture.md`](docs/architecture.md) — how the layers fit together
+- [`docs/api.md`](docs/api.md) — the JS, WASM, and Rust public API
+- [`docs/roadmap.md`](docs/roadmap.md) — what's next, what's deliberately out
+- [`docs/fidelity.md`](docs/fidelity.md) — round-trip policy and known gaps
+- [`CLAUDE.md`](CLAUDE.md) — repo rules for AI development assistants
 
 ## Build
 
 ```bash
-# Rust
 cargo build --workspace
 cargo test  --workspace
 
-# WASM
 wasm-pack build ffi/wasm --target web --release
-
-# JS layer
 cd js && npm install && npm run build
-
-# Demo
-cd demo && npm install && npm run dev
+cd demo && npm install && npm run dev   # http://localhost:5173
 ```
 
-## Architectural rules
+## Architectural rules (must-follow)
 
 1. `s1-model` has **zero external dependencies**.
-2. Format crates depend only on `s1-model`.
-3. All document mutations go through `s1-ops::Operation`.
+2. Format crates depend only on `s1-model` (and `thiserror`).
+3. All document mutations go through `s1-ops::Operation` internally.
 4. Library code never panics — every public function returns `Result`.
 
-See [`CLAUDE.md`](CLAUDE.md) for the full rules and project context.
+Full rules in [`CLAUDE.md`](CLAUDE.md) and [`docs/architecture.md`](docs/architecture.md).
 
 ## License
 
