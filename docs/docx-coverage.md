@@ -106,10 +106,34 @@ Per the [integration plan](integration-plan.md) phase gates:
 
 | Phase | Bucket A target |
 | --- | --- |
-| Phase 1 (today) | 140 (baseline) |
+| Phase 1 (today) | 140 (baseline against `s1-format-docx`) |
 | Phase 2 (Casual Core ready) | 0 |
 | Phase 3 (shadow parsing in editor) | 0 |
 | Phase 4 (element-level migration) | 0 |
 
 The path from 140 → 0 is the `s1-ooxml::Package` preservation layer, not
 140 individual element implementations.
+
+## Update — `s1-ooxml` passthrough layer landed
+
+The first milestone of the preservation strategy ([design](ooxml-design.md))
+is now in: a new `s1-ooxml` crate that parses an entire OOXML package
+into a lossless tree and writes it back.
+
+Run on the same 39-fixture set:
+
+```
+═══ s1-ooxml passthrough audit ═══
+Fixtures total : 39
+  zero-drop    : 39 / 39  ← every tag survives
+  parse fails  : 0
+  write fails  : 0
+```
+
+**`s1-ooxml` round-trips every fixture with zero tag loss.** The
+preservation hypothesis from [`ooxml-design.md`](ooxml-design.md) is
+empirically confirmed.
+
+Bucket A (140 → 0) closes the moment `s1-format-docx`'s read/write path
+sits on top of `s1-ooxml::Package` instead of building `s1-model`
+directly from quick-xml. That refactor is the next milestone.
