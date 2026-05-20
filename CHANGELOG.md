@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-05-21
+
 ### Added
 
 - **`s1-ooxml` preservation crate.** Parses any OOXML package (DOCX, XLSX,
@@ -24,12 +26,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fontTable, customXml, headers, footers, footnotes, endnotes,
   comments, numbering, styles, images, rels, and content types all
   ride through a Casual Editor save unchanged.
+- **Phase 2b — body preservation under edits.** New `BodyOrigin`
+  side-table (`s1-format-docx::body_origin`) maps each top-level body
+  NodeId to its preserved `s1_ooxml::XmlElement` at parse time.
+  `Document` tracks `dirty_body_ids: HashSet<NodeId>` plus a
+  `body_structural_dirty` flag; `apply_transaction` classifies each
+  operation's `target_id` and climbs it to its top-level body
+  ancestor. `export(Docx)` walks the preserved body — clean NodeIds
+  stay byte-equal, dirty NodeIds swap in regenerated elements. Every
+  unknown OOXML inside untouched paragraphs and tables (DrawingML,
+  VML, SDT blocks, AlternateContent fallbacks, MathML) survives an
+  edit-and-save round-trip. `docx_edit_coverage` body-zero-drop:
+  10/39 → 39/39.
 - **DOCX coverage scorecard** (`crates/s1engine/tests/docx_coverage.rs`)
   — three-bucket matrix against the 39 eigenpal fixtures, rendered to
   `docs/docx-coverage.md`.
 - **DOCX edit-path coverage** (`crates/s1engine/tests/docx_edit_coverage.rs`)
   — counterpart of the above that exercises the with-edits splice path
-  and asserts non-body preservation on every fixture.
+  and asserts both non-body preservation (Phase 2a) and body tag-census
+  preservation (Phase 2b) on every fixture.
 - Mirrored 39 DOCX fixtures from the consumer's
   `docx-editor/e2e/fixtures` into `testdocs/docx/eigenpal/` so both
   sides measure against the same gold set.
@@ -40,13 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `s1engine::Document` now carries `Option<s1_ooxml::Package>` plus a
-  `model_dirty: bool` flag. New methods: `has_preservation()`,
-  `is_dirty()`, `invalidate_preservation()`, `preservation()`,
-  `from_model_with_package(...)`.
+- `s1engine::Document` now carries `Option<s1_ooxml::Package>`, an
+  `Option<BodyOrigin>`, a `dirty_body_ids: HashSet<NodeId>` set, and a
+  `body_structural_dirty: bool` flag in addition to `model_dirty: bool`.
+  New methods: `has_preservation()`, `is_dirty()`,
+  `invalidate_preservation()`, `preservation()`,
+  `from_model_with_package(...)`, `from_open_state(...)`.
 - `s1-format-docx` exposes `reader::read_with_package(bytes) ->
-  (DocumentModel, Package)` so consumers can keep both halves of the
-  preservation bridge.
+  (DocumentModel, Package)` and `reader::read_with_package_and_origin(bytes)
+  -> (DocumentModel, Package, BodyOrigin)` so consumers can keep all
+  halves of the preservation bridge.
 
 ### Foundation (earlier in 0.1.x cycle)
 
@@ -60,4 +78,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pure-Rust crates for model, operations, format readers/writers,
   layout, text shaping.
 
-[Unreleased]: https://github.com/schnsrw/core/commits/main
+[Unreleased]: https://github.com/schnsrw/core/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/schnsrw/core/releases/tag/v0.1.0
