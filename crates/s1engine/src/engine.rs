@@ -43,11 +43,12 @@ impl Engine {
     /// Open a document from raw bytes with an explicit format.
     pub fn open_as(&self, data: &[u8], format: Format) -> Result<Document, Error> {
         // DOCX takes the preservation-aware path so `export(Docx)` can
-        // round-trip the file losslessly when no edits happen.
+        // round-trip the file losslessly when no edits happen, and so the
+        // Phase 2b splice has per-NodeId origin info on edits.
         #[cfg(feature = "docx")]
         if matches!(format, Format::Docx) {
-            let (model, pkg) = s1_format_docx::reader::read_with_package(data)?;
-            return Ok(Document::from_model_with_package(model, pkg));
+            let (model, pkg, origin) = s1_format_docx::reader::read_with_package_and_origin(data)?;
+            return Ok(Document::from_open_state(model, pkg, origin));
         }
 
         let model = match format {

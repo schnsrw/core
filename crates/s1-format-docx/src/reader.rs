@@ -53,6 +53,24 @@ pub fn read_with_package(input: &[u8]) -> Result<(DocumentModel, s1_ooxml::Packa
     Ok((model, package))
 }
 
+/// Read a DOCX and return the model, the preservation package, and a
+/// [`BodyOrigin`] mapping every top-level body NodeId back to its
+/// preserved `XmlElement`.
+///
+/// The origin table is what makes Phase 2b per-node body preservation
+/// possible: on edit, the exporter splices preserved elements back in for
+/// NodeIds that weren't dirtied, so unknown OOXML inside untouched
+/// paragraphs / tables (drawings, structured document tags, custom XML)
+/// rides through verbatim.
+pub fn read_with_package_and_origin(
+    input: &[u8],
+) -> Result<(DocumentModel, s1_ooxml::Package, crate::BodyOrigin), DocxError> {
+    let model = read_model_internal(input)?;
+    let package = s1_ooxml::Package::parse(input)?;
+    let origin = crate::BodyOrigin::build(&model, &package);
+    Ok((model, package, origin))
+}
+
 fn read_model_internal(input: &[u8]) -> Result<DocumentModel, DocxError> {
     let cursor = Cursor::new(input);
     let mut archive = ZipArchive::new(cursor)?;

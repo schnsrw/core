@@ -3,6 +3,8 @@
 //! [`Document`] wraps [`DocumentModel`] with undo/redo history and provides
 //! a convenient API for reading, editing, and exporting documents.
 
+use std::collections::HashSet;
+
 use s1_model::{
     AttributeKey, AttributeValue, DocumentMetadata, DocumentModel, Node, NodeId, NodeType,
 };
@@ -33,9 +35,25 @@ pub struct Document {
     /// entirely — once a caller bypasses the operation system, we can't
     /// reason about which parts of the model agree with the package.
     preservation: Option<s1_ooxml::Package>,
+    /// Per-body-child origin table — maps each top-level body NodeId to
+    /// its preserved `XmlElement`. Built at open time alongside
+    /// `preservation`. Drives the Phase 2b per-node splice in
+    /// `export(Docx)`: clean NodeIds re-emit their preserved XML
+    /// verbatim, dirty NodeIds re-render through the writer.
+    body_origin: Option<s1_format_docx::BodyOrigin>,
+    /// Top-level body NodeIds touched since open. Drives the splice
+    /// path — only these get regenerated from the model; everything
+    /// else rides through verbatim via [`body_origin`].
+    dirty_body_ids: HashSet<NodeId>,
     /// `true` once an edit-class mutation has been applied since open.
     /// Drives the splice path in `export(Docx)`.
     model_dirty: bool,
+    /// Set when the body has structurally changed (children added /
+    /// removed / reordered) or when a non-operation mutation bypassed
+    /// the dirty-tracking path. Forces the splice to fall back to
+    /// wholesale regenerate of `word/document.xml` because the origin
+    /// table can no longer be aligned positionally.
+    body_structural_dirty: bool,
 }
 
 impl Document {
@@ -45,7 +63,10 @@ impl Document {
             model: DocumentModel::new(),
             history: History::new(),
             preservation: None,
+            body_origin: None,
+            dirty_body_ids: HashSet::new(),
             model_dirty: false,
+            body_structural_dirty: false,
         }
     }
 
@@ -55,7 +76,10 @@ impl Document {
             model,
             history: History::new(),
             preservation: None,
+            body_origin: None,
+            dirty_body_ids: HashSet::new(),
             model_dirty: false,
+            body_structural_dirty: false,
         }
     }
 
@@ -70,7 +94,32 @@ impl Document {
             model,
             history: History::new(),
             preservation: Some(package),
+            body_origin: None,
+            dirty_body_ids: HashSet::new(),
             model_dirty: false,
+            body_structural_dirty: false,
+        }
+    }
+
+    /// Create a Document from a model, its preservation package, and a
+    /// per-body-child origin table. The origin table is what lets
+    /// `export(Docx)` splice individual body elements back verbatim on
+    /// edit instead of regenerating the whole `word/document.xml` — so
+    /// untouched paragraphs / tables keep every unknown OOXML child
+    /// (drawings, structured document tags, custom XML) byte-for-byte.
+    pub fn from_open_state(
+        model: DocumentModel,
+        package: s1_ooxml::Package,
+        body_origin: s1_format_docx::BodyOrigin,
+    ) -> Self {
+        Self {
+            model,
+            history: History::new(),
+            preservation: Some(package),
+            body_origin: Some(body_origin),
+            dirty_body_ids: HashSet::new(),
+            model_dirty: false,
+            body_structural_dirty: false,
         }
     }
 
@@ -91,7 +140,9 @@ impl Document {
     /// original."
     pub fn invalidate_preservation(&mut self) {
         self.preservation = None;
+        self.body_origin = None;
         self.model_dirty = true;
+        self.body_structural_dirty = true;
     }
 
     /// Borrow the preservation package, if any. Mainly for tests and
@@ -124,6 +175,8 @@ impl Document {
     /// (e.g., bulk import, format reader integration, or testing).
     pub fn model_mut(&mut self) -> &mut DocumentModel {
         self.preservation = None;
+        self.body_origin = None;
+        self.body_structural_dirty = true;
         &mut self.model
     }
 
@@ -142,6 +195,8 @@ impl Document {
     /// Get mutable document metadata.
     pub fn metadata_mut(&mut self) -> &mut DocumentMetadata {
         self.preservation = None;
+        self.body_origin = None;
+        self.body_structural_dirty = true;
         self.model.metadata_mut()
     }
 
@@ -242,7 +297,22 @@ impl Document {
     /// On failure, all operations are rolled back.
     pub fn apply_transaction(&mut self, txn: &Transaction) -> Result<(), Error> {
         self.model_dirty = true;
+        // Classify ops against the pre-apply model state so we know whether
+        // each target is currently a top-level body descendant. Insert /
+        // Delete / Move at body level changes the body's structure and
+        // collapses the Phase 2b splice back to wholesale regenerate.
+        let body_id = self.model.body_id();
+        let mut new_dirty: Vec<NodeId> = Vec::new();
+        let mut structural = false;
+        for op in &txn.operations {
+            classify_op(&self.model, body_id, op, &mut new_dirty, &mut structural);
+        }
         self.history.apply(&mut self.model, txn)?;
+        if structural {
+            self.body_structural_dirty = true;
+        } else {
+            self.dirty_body_ids.extend(new_dirty);
+        }
         Ok(())
     }
 
@@ -258,12 +328,17 @@ impl Document {
     /// Undo the last transaction. Returns `true` if something was undone.
     pub fn undo(&mut self) -> Result<bool, Error> {
         self.model_dirty = true;
+        // Undo/redo can shuffle body structure in ways the per-NodeId
+        // tracker can't reliably reconstruct after the fact — collapse
+        // to wholesale regenerate for safety.
+        self.body_structural_dirty = true;
         Ok(self.history.undo(&mut self.model)?)
     }
 
     /// Redo the last undone transaction. Returns `true` if something was redone.
     pub fn redo(&mut self) -> Result<bool, Error> {
         self.model_dirty = true;
+        self.body_structural_dirty = true;
         Ok(self.history.redo(&mut self.model)?)
     }
 
@@ -311,9 +386,6 @@ impl Document {
     /// paragraphs inside each TOC node. Call this before exporting if
     /// content has changed since the TOC was inserted.
     pub fn update_toc(&mut self) {
-        // TOC update rewrites cached entry paragraphs — that's a model
-        // mutation, mark dirty so export splices through the package.
-        self.model_dirty = true;
         // First, find all TOC nodes and their max_level
         let body_id = match self.model.body_id() {
             Some(id) => id,
@@ -333,7 +405,19 @@ impl Document {
             .collect();
 
         if toc_nodes.is_empty() {
+            // No TOC to update — no model mutation either. Skip dirtying
+            // so the no-op edit path can re-emit the preserved package
+            // verbatim.
             return;
+        }
+
+        // TOC update is about to rewrite cached entry paragraphs. Each
+        // TOC node is itself a top-level body child, so dirty-tracking
+        // just adds the TOC NodeIds to the body dirty set — every other
+        // body child rides through verbatim.
+        self.model_dirty = true;
+        for (toc_id, _) in &toc_nodes {
+            self.dirty_body_ids.insert(*toc_id);
         }
 
         // Collect headings (excluding any inside TOC nodes)
@@ -654,12 +738,28 @@ impl Document {
             #[cfg(feature = "docx")]
             Format::Docx => {
                 if let Some(pkg) = &self.preservation {
+                    // Nothing dirty — verbatim re-emit (Phase 2).
                     if !self.model_dirty {
                         return Ok(pkg
                             .write()
                             .map_err(|e| Error::Format(format!("ooxml package write: {e}")))?);
                     }
-                    return Ok(self.export_docx_spliced(pkg)?);
+                    // Body structure changed or no origin table — fall
+                    // back to wholesale `word/document.xml` regenerate
+                    // (Phase 2a).
+                    if self.body_structural_dirty || self.body_origin.is_none() {
+                        return Ok(self.export_docx_spliced(pkg)?);
+                    }
+                    // model_dirty was set but no body NodeId was actually
+                    // touched (e.g., a no-op `update_toc` on a doc without
+                    // a TOC). Body is unchanged — verbatim re-emit.
+                    if self.dirty_body_ids.is_empty() {
+                        return Ok(pkg
+                            .write()
+                            .map_err(|e| Error::Format(format!("ooxml package write: {e}")))?);
+                    }
+                    // Specific body NodeIds dirty — Phase 2b per-node splice.
+                    return Ok(self.export_docx_phase2b_splice(pkg)?);
                 }
                 Ok(s1_format_docx::write(&self.model)?)
             }
@@ -719,6 +819,126 @@ impl Document {
             .insert("word/document.xml".to_owned(), new_doc_part);
 
         // Step 4: write the patched package.
+        patched
+            .write()
+            .map_err(|e| Error::Format(format!("ooxml package write: {e}")))
+    }
+
+    /// Phase 2b per-NodeId splice: regenerate only the body children
+    /// whose NodeIds are in `dirty_body_ids`; keep every other body
+    /// element verbatim from the preserved package — including unknown
+    /// OOXML inside untouched paragraphs / tables (drawings, structured
+    /// document tags, custom XML, MathML, AlternateContent fallbacks).
+    ///
+    /// Falls back to the Phase 2a wholesale-regenerate path if the
+    /// origin table can't be aligned positionally with the current
+    /// model body (body structure changed in a way the classifier
+    /// didn't flag, or the regenerated body's block count diverges).
+    #[cfg(feature = "docx")]
+    fn export_docx_phase2b_splice(&self, pkg: &s1_ooxml::Package) -> Result<Vec<u8>, Error> {
+        use s1_format_docx::body_origin::{body_in, body_in_mut, is_block_level};
+        use s1_ooxml::{PartContent, XmlElement, XmlNode};
+
+        let origin = match &self.body_origin {
+            Some(o) => o,
+            None => return self.export_docx_spliced(pkg),
+        };
+
+        // Current model body NodeIds must still match the origin order. If
+        // not, fall back to wholesale regenerate — the splice can't realign.
+        let body_id = self
+            .model
+            .body_id()
+            .ok_or_else(|| Error::Format("document has no body".to_owned()))?;
+        let body_node = self
+            .model
+            .node(body_id)
+            .ok_or_else(|| Error::Format("body NodeId points at nothing".to_owned()))?;
+        if body_node.children.as_slice() != origin.node_id_order.as_slice() {
+            return self.export_docx_spliced(pkg);
+        }
+
+        // Regenerate the model so we can source per-NodeId XML for the
+        // dirty entries. Reading back via Package keeps the regenerated
+        // body in the same XmlElement form we'll splice into.
+        let regenerated_bytes = s1_format_docx::write(&self.model)?;
+        let regenerated_pkg = s1_ooxml::Package::parse(&regenerated_bytes)
+            .map_err(|e| Error::Format(format!("re-parse regenerated docx: {e}")))?;
+        let regenerated_part = regenerated_pkg
+            .parts
+            .get("word/document.xml")
+            .ok_or_else(|| Error::Format("regenerated DOCX has no word/document.xml".to_owned()))?;
+        let regenerated_tree = match &regenerated_part.content {
+            PartContent::Xml(t) => t,
+            PartContent::Binary(_) => {
+                return Err(Error::Format(
+                    "regenerated word/document.xml is binary".to_owned(),
+                ));
+            }
+        };
+        let regenerated_body = body_in(&regenerated_tree.root).ok_or_else(|| {
+            Error::Format("regenerated word/document.xml has no <w:body>".to_owned())
+        })?;
+        let regenerated_blocks: Vec<&XmlElement> = regenerated_body
+            .children
+            .iter()
+            .filter_map(|c| match c {
+                XmlNode::Element(el) if is_block_level(&el.name.local_name) => Some(el),
+                _ => None,
+            })
+            .collect();
+        if regenerated_blocks.len() != origin.node_id_order.len() {
+            // Writer emitted a different number of body blocks than the
+            // model claims. Bail to wholesale regenerate.
+            return self.export_docx_spliced(pkg);
+        }
+
+        // Clone the preserved document.xml tree and overwrite only the
+        // dirty NodeIds' block elements with the regenerated XML. Every
+        // other XmlNode in the body (preserved blocks, sectPr, non-TOC
+        // sdt blocks, comments, range markers) rides through unchanged.
+        let preserved_part = pkg
+            .parts
+            .get("word/document.xml")
+            .ok_or_else(|| Error::Format("preserved DOCX has no word/document.xml".to_owned()))?;
+        let mut preserved_tree = match &preserved_part.content {
+            PartContent::Xml(t) => t.clone(),
+            PartContent::Binary(_) => {
+                return Err(Error::Format(
+                    "preserved word/document.xml is binary".to_owned(),
+                ));
+            }
+        };
+        let preserved_body = body_in_mut(&mut preserved_tree.root).ok_or_else(|| {
+            Error::Format("preserved word/document.xml has no <w:body>".to_owned())
+        })?;
+
+        let mut block_idx = 0usize;
+        for child in &mut preserved_body.children {
+            if let XmlNode::Element(el) = child {
+                if is_block_level(&el.name.local_name) {
+                    if block_idx >= origin.node_id_order.len() {
+                        return self.export_docx_spliced(pkg);
+                    }
+                    let nid = origin.node_id_order[block_idx];
+                    if self.dirty_body_ids.contains(&nid) {
+                        *el = regenerated_blocks[block_idx].clone();
+                    }
+                    block_idx += 1;
+                }
+            }
+        }
+        if block_idx != origin.node_id_order.len() {
+            // Mid-walk count mismatch — preserved body lost or gained
+            // block elements since open. Bail.
+            return self.export_docx_spliced(pkg);
+        }
+
+        // Swap the patched document.xml back into a clone of the package.
+        let mut patched = pkg.clone();
+        if let Some(part) = patched.parts.get_mut("word/document.xml") {
+            part.content = PartContent::Xml(preserved_tree);
+        }
         patched
             .write()
             .map_err(|e| Error::Format(format!("ooxml package write: {e}")))
@@ -797,5 +1017,98 @@ impl Document {
 impl Default for Document {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Classify one operation against the *pre-apply* model state for
+/// Phase 2b dirty tracking.
+///
+/// Populates `new_dirty` with the top-level body NodeId(s) affected by this
+/// op, and sets `*structural` when the op changes the body's child list
+/// (insert / delete / move at body level) — that case forces the splice
+/// path to fall back to wholesale `word/document.xml` regeneration since
+/// the origin table can no longer be aligned positionally.
+fn classify_op(
+    model: &DocumentModel,
+    body_id: Option<NodeId>,
+    op: &Operation,
+    new_dirty: &mut Vec<NodeId>,
+    structural: &mut bool,
+) {
+    let body_id = match body_id {
+        Some(b) => b,
+        None => return,
+    };
+    match op {
+        Operation::InsertNode { parent_id, .. } => {
+            if *parent_id == body_id {
+                *structural = true;
+            } else if let Some(top) = top_level_body_ancestor(model, *parent_id, body_id) {
+                new_dirty.push(top);
+            }
+        }
+        Operation::DeleteNode { target_id, .. } => {
+            let parent_of_target = model.node(*target_id).and_then(|n| n.parent);
+            if parent_of_target == Some(body_id) {
+                *structural = true;
+            } else if let Some(top) = top_level_body_ancestor(model, *target_id, body_id) {
+                new_dirty.push(top);
+            }
+        }
+        Operation::MoveNode {
+            target_id,
+            new_parent_id,
+            ..
+        } => {
+            let parent_of_target = model.node(*target_id).and_then(|n| n.parent);
+            if parent_of_target == Some(body_id) || *new_parent_id == body_id {
+                *structural = true;
+                return;
+            }
+            if let Some(top) = top_level_body_ancestor(model, *target_id, body_id) {
+                new_dirty.push(top);
+            }
+            if let Some(top) = top_level_body_ancestor(model, *new_parent_id, body_id) {
+                new_dirty.push(top);
+            }
+        }
+        Operation::InsertText { target_id, .. }
+        | Operation::DeleteText { target_id, .. }
+        | Operation::SetAttributes { target_id, .. }
+        | Operation::RemoveAttributes { target_id, .. } => {
+            if let Some(top) = top_level_body_ancestor(model, *target_id, body_id) {
+                new_dirty.push(top);
+            }
+        }
+        // Metadata and style ops don't touch the body XML, so they don't
+        // dirty any body NodeId. They affect docProps/core.xml and
+        // word/styles.xml respectively — the splice keeps those parts
+        // from the preserved package today (Phase 2a known limitation).
+        Operation::SetMetadata { .. }
+        | Operation::SetStyle { .. }
+        | Operation::RemoveStyle { .. } => {}
+        // Forward-compat for ops added in future versions: treat unknown
+        // ops as potentially structural to avoid silent data loss.
+        _ => {
+            *structural = true;
+        }
+    }
+}
+
+/// Walk parent links from `id` up to the body's direct child. Returns
+/// `None` if `id` is not in the body subtree (e.g., comments / footnotes
+/// live under the document root, not under body).
+fn top_level_body_ancestor(model: &DocumentModel, id: NodeId, body_id: NodeId) -> Option<NodeId> {
+    if id == body_id {
+        return None;
+    }
+    let mut current = id;
+    loop {
+        let node = model.node(current)?;
+        let parent = node.parent?;
+        if parent == body_id {
+            return Some(current);
+        }
+        current = parent;
     }
 }

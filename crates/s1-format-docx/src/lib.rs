@@ -13,6 +13,7 @@
 //! # Phase 2 (planned)
 //! - Tables, images, lists, headers/footers, hyperlinks, bookmarks, comments
 
+pub mod body_origin;
 pub mod comments_parser;
 pub mod comments_writer;
 pub mod content_parser;
@@ -41,6 +42,7 @@ pub mod xml_util;
 pub mod xml_writer;
 
 // Re-export primary types at crate root.
+pub use body_origin::BodyOrigin;
 pub use error::DocxError;
-pub use reader::read;
+pub use reader::{read, read_with_package, read_with_package_and_origin};
 pub use writer::write;

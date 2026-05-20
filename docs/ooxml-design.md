@@ -177,39 +177,49 @@ This crate is preservation-only — it doesn't expose editing.
    `model_dirty = true`. Escape-hatch mutation (`model_mut`,
    `metadata_mut`) drops preservation entirely.
 
-This gives the consumer two of the three lossless cases out of the box:
+This gives the consumer all three lossless cases out of the box:
 
 | Path | Lossless? |
 | --- | --- |
 | Open + export (no edits) | ✅ verbatim |
-| Open + edit + export — non-body parts | ✅ ride through |
-| Open + edit + export — unknowns inside `word/document.xml` | ❌ Phase 2b |
+| Open + edit + export — non-body parts | ✅ ride through (Phase 2a) |
+| Open + edit + export — unknowns inside `word/document.xml` | ✅ per-node splice (Phase 2b) |
 
 ## Phase 2b — body preservation under edits
 
-The remaining gap is unknown elements *inside* `word/document.xml`.
-The current splice regenerates the whole body, so anything we never
-projected into `DocumentModel` (DrawingML / VML / SDT / complex-script
-properties, etc.) is gone the moment the user edits.
+Unknown elements *inside* `word/document.xml` (DrawingML / VML / SDT /
+complex-script properties, AlternateContent fallbacks, …) used to drop
+on edit because the Phase 2a splice regenerated the whole body. Phase
+2b replaces that with a per-NodeId splice.
 
-Plan:
+Mechanism:
 
-1. **Side-table**: during `read_with_package`, populate a
-   `HashMap<NodeId, XmlElementHandle>` that points each projected
-   paragraph / table / sectPr back at its origin
-   `s1_ooxml::XmlElement`. Stored alongside `Package` on
-   `s1engine::Document`.
-2. **Dirty NodeIds**: extend `s1_ops::Operation` so we can extract the
-   set of `NodeId`s that an operation touches. `Document::apply` /
-   `apply_transaction` accumulate dirty IDs into a `HashSet<NodeId>`.
-3. **Per-node splice**: rewrite `export_docx_spliced` so it walks the
-   preserved body's children in order. For each child:
-   - If the side-table tells us which `NodeId` it projected to and
-     that NodeId is clean → copy the original `XmlElement` verbatim.
-   - If the NodeId is dirty → re-emit from the model via the existing
-     element writer.
-   - If the side-table has no entry (we never projected this child) →
-     copy verbatim. This is how unknowns ride through.
+1. **Side-table**: `s1_format_docx::reader::read_with_package_and_origin`
+   returns a `BodyOrigin { by_node_id, node_id_order }` built by
+   walking the preserved `word/document.xml` body's block-level
+   children (`<w:p>`, `<w:tbl>`, `<w:sdt>`) alongside the model body's
+   children in document order. Lives on `s1engine::Document` next to
+   the package — `s1-ooxml` itself stays free of `s1-model`
+   dependencies.
+2. **Dirty NodeIds**: `Document` tracks `dirty_body_ids:
+   HashSet<NodeId>` plus a `body_structural_dirty: bool` flag.
+   `apply_transaction` classifies each `Operation`: `InsertNode` /
+   `DeleteNode` / `MoveNode` at body level flips the structural
+   flag (forces wholesale regenerate); `SetAttributes` / `InsertText`
+   / `DeleteText` / `RemoveAttributes` climb `target_id` to its
+   top-level body ancestor via parent links, which goes into the
+   dirty set. `update_toc` adds the TOC NodeIds directly. `undo` /
+   `redo` conservatively flip the structural flag since the inverse
+   txn's ops aren't classified.
+3. **Per-node splice**: `export_docx_phase2b_splice` walks the cloned
+   preserved body's children in order:
+   - If a block-level element's positional NodeId is in
+     `dirty_body_ids` → swap it with the regenerated element at the
+     same position from a fresh model-driven write.
+   - Otherwise → leave the preserved `XmlElement` in place verbatim.
+   - Non-block-level XmlNodes (`<w:sectPr>`, range markers, ins/del
+     wrappers) ride through at their original positions because the
+     walk never touches them.
 
 Effect: the body Bucket A closes the same way the no-edits Bucket A
 did — structurally, not per-tag.
@@ -224,9 +234,9 @@ These run on every push. Regression on any of them fails CI.
 2. **`s1engine::docx_coverage`** — engine-level coverage scorecard
    (no-edits path). ✅ today: 39/39 zero-drop, Bucket A = 0.
 3. **`s1engine::docx_edit_coverage`** — engine-level coverage scorecard
-   (with-edits path). Asserts non-body preservation on every fixture.
-   ✅ today: 39/39 non-body preserved; 10/39 body-zero-drop (Phase 2b
-   target: 39/39).
+   (with-edits path). Asserts both non-body preservation and body
+   tag-census preservation on every fixture. ✅ today: 39/39 non-body
+   preserved (Phase 2a); 39/39 body-zero-drop (Phase 2b).
 4. **Per-crate unit tests** — `Package`, `XmlTree`, `ContentTypes`,
    `Relationships`. ✅ today: green.
 

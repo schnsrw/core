@@ -193,42 +193,41 @@ Fixtures total                        : 39
   parsed                              : 39
   re-written after edit               : 39
   non-body parts preserved (Phase 2a)  : 39 / 39   ✓ contract met
-  body zero-drop (Phase 2b target)      : 10 / 39   ← gap remains
+  body zero-drop (Phase 2b)             : 39 / 39   ✓ contract met
 ```
 
-Non-body preservation is the Phase 2a contract. The test asserts it on
-every fixture; any regression fails CI. Body preservation under edits
-matches the old writer's `10 / 39` baseline — closing it is Phase 2b.
+Both contracts are asserted on every fixture; any regression fails CI.
 
-### What this enables for the consumer (updated)
+### What this enables for the consumer (Phase 2b)
 
-| Path | Phase 1 | Phase 2a (now) | Phase 2b (target) |
+| Path | Phase 1 | Phase 2a | Phase 2b (now) |
 | --- | --- | --- | --- |
 | Open DOCX → save DOCX (no edits) | Lossy | **Zero-drop** | Zero-drop |
-| Open DOCX → save DOCX (with edits) | Lossy on everything | **Non-body preserved** | Zero-drop |
+| Open DOCX → save DOCX (with edits) | Lossy on everything | **Non-body preserved** | **Zero-drop end-to-end** |
 | Open DOCX → save PDF / MD / TXT / ODT | Lossy by target | Lossy by target | Lossy by target |
 
-The editor's typical save path falls under "open DOCX → save DOCX (with
-edits)", so Phase 2a is the meaningful gain for them today: every theme,
-font, custom-XML, footnote, header, comment, and embedded image now
-survives a Casual Editor save.
+The editor's typical save path falls under "open DOCX → save DOCX
+(with edits)". Phase 2b closes the body gap: every theme, font,
+custom-XML, footnote, header, comment, embedded image *plus* every
+DrawingML / VML / SDT / AlternateContent-fallback element inside
+untouched paragraphs and tables now survives a Casual Editor save.
 
-### What's still ahead — Phase 2b
+### How the per-node splice works
 
-Body unknowns still drop on edit because `word/document.xml` is
-regenerated wholesale from `DocumentModel`. Closing this needs the
-**NodeId-keyed body-merge**:
-
-- During projection, record a `HashMap<NodeId, XmlElementHandle>` so each
-  projected paragraph / table / sectPr has a back-reference to the
-  original `s1-ooxml::XmlElement`.
-- During the apply / apply_transaction / undo / redo path, mark
-  individual `NodeId`s as dirty.
-- During the export splice, walk the original body's `XmlElement`s in
-  order. For each one we recognise as projected, re-emit from the model
-  *if dirty*, else copy verbatim. Elements we never projected (unknowns)
-  ride through verbatim.
-
-That algorithm closes the body Bucket A on edits too. Roughly a week of
-careful work; the infrastructure (`s1-ooxml::Package` + `Document::is_dirty`
-+ regression tests) is already in place.
+- `s1_format_docx::reader::read_with_package_and_origin` returns a
+  `BodyOrigin { by_node_id, node_id_order }` side-table mapping each
+  top-level body NodeId to the preserved `s1_ooxml::XmlElement` from
+  `word/document.xml`. Built by walking the model body and the
+  preserved body's block-level children in lockstep.
+- `Document::apply_transaction` walks each `Operation`'s `target_id`
+  up to its top-level body ancestor and inserts that NodeId into
+  `dirty_body_ids`. Insert / delete / move at body level flips a
+  structural-dirty flag and falls back to wholesale regenerate.
+- `Document::export(Docx)` lanes:
+  1. `model_dirty == false` → re-emit the package verbatim.
+  2. `body_structural_dirty || body_origin.is_none()` →
+     Phase 2a wholesale regenerate.
+  3. `dirty_body_ids.is_empty()` (no-op edit) → verbatim re-emit.
+  4. Otherwise → per-node splice: clone preserved document.xml,
+     walk its body, swap dirty NodeIds with regenerated elements
+     at the same position.

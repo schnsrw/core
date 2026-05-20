@@ -157,7 +157,7 @@ New regression test `docx_edit_coverage` on the same 39 fixtures:
 
 ```
 non-body parts preserved (Phase 2a)  : 39 / 39   ✓ contract met
-body zero-drop                        : 10 / 39   ← Phase 2b target
+body zero-drop                        : 39 / 39   ← see Phase 2b
 ```
 
 Every theme, font, customXml, footnote, header, comment, embedded
@@ -167,23 +167,40 @@ modified.
 
 ---
 
-### Phase 2b — body preservation under edits · 🟡 next
+### Phase 2b — body preservation under edits · ✅ done
 
-Body unknowns inside `word/document.xml` still drop on edit because the
-body is regenerated wholesale from `DocumentModel`. The remaining work:
+Body unknowns inside `word/document.xml` used to drop on edit because
+the body was regenerated wholesale from `DocumentModel`. Phase 2b
+replaces that with a per-NodeId splice:
 
-1. During `read_with_package`, populate a side-table
-   `HashMap<NodeId, XmlElementHandle>` mapping each projected
-   paragraph / table / sectPr to the original `s1-ooxml::XmlElement`.
-2. Track dirty `NodeId`s through `apply`, `apply_transaction`, `undo`,
-   `redo`.
-3. Replace the splice path in `export_docx_spliced`: walk the preserved
-   body's children in order. For each that maps to a clean `NodeId`,
-   copy verbatim. For dirty ones, regenerate from the model. Unknown
-   elements (never projected) ride through untouched.
+1. `s1_format_docx::reader::read_with_package_and_origin` returns a
+   `BodyOrigin { by_node_id, node_id_order }` side-table built at
+   parse time by aligning the model's body children with the preserved
+   `word/document.xml` body in document order.
+2. `Document` now tracks `dirty_body_ids: HashSet<NodeId>` plus a
+   `body_structural_dirty` flag. `apply_transaction` walks the
+   transaction's operations against the pre-apply model and climbs
+   each `target_id` up to its top-level body ancestor — that NodeId
+   goes into the dirty set. Insert / delete / move at body level
+   flips `body_structural_dirty` and forces wholesale regenerate.
+3. `export(Docx)` lanes refined:
+   - Nothing dirty → verbatim re-emit (Phase 2).
+   - Body structurally changed or no origin → wholesale regenerate
+     (Phase 2a fallback).
+   - `dirty_body_ids.is_empty()` (no-op edit) → verbatim re-emit.
+   - Specific NodeIds dirty → walk preserved body; clean entries
+     stay byte-equal, dirty entries swap in the regenerated element
+     from the same position.
 
-**Done when:** `docx_edit_coverage`'s "body zero-drop" climbs from
-10/39 to 39/39. Estimated one week of focused work.
+Every other XmlNode in the body — `<w:sectPr>`, non-TOC `<w:sdt>`,
+range markers — sits at its original location and rides through
+untouched.
+
+**Done:** `docx_edit_coverage`'s "body zero-drop" climbs from
+10/39 to 39/39. The 162 unique unknown body tags Phase 2a dropped
+(mostly `a:*` drawing primitives and `mc:*` AlternateContent
+fallbacks inside paragraphs with images / shapes) all survive
+edits now.
 
 ---
 

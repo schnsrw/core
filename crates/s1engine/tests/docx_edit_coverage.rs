@@ -2,21 +2,24 @@
 //!
 //! Counterpart to `docx_coverage.rs`, which exercises the pure-passthrough
 //! path (open + export with no mutation). This test exercises the
-//! **with-edits** path: open each fixture, fire a trivial mutation to flip
-//! `model_dirty`, export, then measure what survives.
+//! **with-edits** path: open each fixture, fire a trivial mutation, export,
+//! then measure what survives.
 //!
-//! Two things are checked per fixture:
+//! Two contracts are enforced per fixture:
 //!
-//! 1. **Non-body part preservation** — every package part other than
-//!    `word/document.xml` should be byte-identical between input and
-//!    output. This is the Phase 2a guarantee: theme, fontTable, customXml,
-//!    headers, footers, footnotes, endnotes, comments, numbering, styles,
-//!    images, rels, content types all ride through unchanged.
+//! 1. **Non-body part preservation (Phase 2a)** — every package part
+//!    other than `word/document.xml` is byte-identical between input and
+//!    output: theme, fontTable, customXml, headers, footers, footnotes,
+//!    endnotes, comments, numbering, styles, images, rels, content
+//!    types all ride through unchanged.
 //!
-//! 2. **Body tag census** — what survives inside `word/document.xml` once
-//!    it's been regenerated from the model. This is Phase 2a's known
-//!    limitation: body unknowns are lost on edit. Phase 2b (NodeId-keyed
-//!    body merge) is the work that closes this.
+//! 2. **Body tag census preservation (Phase 2b)** — every OOXML element
+//!    name present in the input body survives into the output body.
+//!    The per-NodeId splice keeps clean paragraphs / tables / TOC
+//!    blocks verbatim (including any unknown OOXML inside them —
+//!    drawings, structured document tags, AlternateContent fallbacks,
+//!    MathML); only NodeIds in the dirty set are regenerated through
+//!    the writer.
 //!
 //! Run with: `cargo test --package s1engine --test docx_edit_coverage -- --nocapture`
 
@@ -147,12 +150,13 @@ fn audit_fixture(path: &Path) -> EditReport {
     };
     report.parsed = true;
 
-    // Trivial mutation: update_toc() flips model_dirty before doing anything,
-    // and exits early for documents without a TOC node. For documents that
-    // do have a TOC, it regenerates the cached entries — a real but minor
-    // semantic change.
+    // Trivial mutation: `update_toc()` rewrites cached entry paragraphs
+    // for documents that have a TOC, and is a no-op for the rest. Under
+    // Phase 2b's per-NodeId dirty tracking, no-TOC docs export verbatim
+    // (no body NodeId dirty); TOC docs export through the per-node splice
+    // (only the TOC element is regenerated). Both paths should preserve
+    // every non-TOC body element verbatim.
     doc.update_toc();
-    assert!(doc.is_dirty(), "update_toc should flip the dirty flag");
 
     let bytes_out = match doc.export(Format::Docx) {
         Ok(b) => b,
@@ -244,7 +248,7 @@ fn docx_edit_coverage_audit() {
     eprintln!("  parsed                              : {parsed}");
     eprintln!("  re-written after edit               : {written}");
     eprintln!("  non-body parts preserved (Phase 2a)  : {non_body_clean} / {total}");
-    eprintln!("  body zero-drop (Phase 2b target)      : {body_zero_drop} / {total}");
+    eprintln!("  body zero-drop (Phase 2b)             : {body_zero_drop} / {total}");
 
     let with_drift: Vec<_> = reports
         .iter()
@@ -261,23 +265,25 @@ fn docx_edit_coverage_audit() {
         }
     }
 
-    // Aggregate body drops to show the Phase 2b target.
+    // Aggregate body drops — should be empty under Phase 2b.
     let mut body_drops_total: BTreeMap<String, u32> = BTreeMap::new();
     for r in &reports {
         for (tag, (n, _)) in &r.body_dropped_tags {
             *body_drops_total.entry(tag.clone()).or_insert(0) += n;
         }
     }
-    eprintln!();
-    eprintln!(
-        "Body tags dropped on edit ({} unique — Phase 2b backlog):",
-        body_drops_total.len()
-    );
-    for (tag, n) in body_drops_total.iter().take(30) {
-        eprintln!("  {tag:36} {n}x");
-    }
-    if body_drops_total.len() > 30 {
-        eprintln!("  … ({} more)", body_drops_total.len() - 30);
+    if !body_drops_total.is_empty() {
+        eprintln!();
+        eprintln!(
+            "Body tags dropped on edit ({} unique):",
+            body_drops_total.len()
+        );
+        for (tag, n) in body_drops_total.iter().take(30) {
+            eprintln!("  {tag:36} {n}x");
+        }
+        if body_drops_total.len() > 30 {
+            eprintln!("  … ({} more)", body_drops_total.len() - 30);
+        }
     }
 
     // Phase 2a contract: every fixture must round-trip with **non-body
@@ -287,5 +293,15 @@ fn docx_edit_coverage_audit() {
         total,
         "{} fixtures lost non-body parts under edit — splice is broken",
         total - non_body_clean
+    );
+
+    // Phase 2b contract: every fixture must round-trip with the body's
+    // tag census intact across an edit. Per-NodeId splice keeps clean
+    // body elements (and the unknown OOXML inside them) verbatim.
+    assert_eq!(
+        body_zero_drop,
+        total,
+        "{} fixtures dropped body tags under edit — Phase 2b splice is broken",
+        total - body_zero_drop
     );
 }

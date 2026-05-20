@@ -30,7 +30,7 @@ Casual Core sits underneath everything in Casual Office:
 | --- | --- |
 | Open DOCX → save DOCX (no edits) | **39 / 39** |
 | Open DOCX → save DOCX (edits, non-body parts) | **39 / 39** |
-| Open DOCX → save DOCX (edits, body content) | 10 / 39 — Phase 2b target |
+| Open DOCX → save DOCX (edits, body content) | **39 / 39** |
 
 The preservation layer (`crates/s1-ooxml/`) keeps theme, fontTable,
 customXml, headers/footers, footnotes, endnotes, comments, numbering,

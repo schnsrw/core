@@ -41,11 +41,16 @@ The big rock. Detailed plan in
       footnotes, endnotes, comments, numbering, styles, images, rels,
       content types) rides through unchanged. New test
       `tests/docx_edit_coverage.rs` is the regression gate.
-- [ ] **Phase 2b** — body preservation under edits. Side-table maps
-      each projected paragraph / table / sectPr to its origin in the
-      preserved `XmlElement`; dirty-NodeId tracking drives a per-node
-      splice so body unknowns ride through even when edits happen.
-      Drives `docx_edit_coverage` body-zero-drop from 10/39 → 39/39.
+- [x] **Phase 2b** — body preservation under edits. `BodyOrigin`
+      side-table built at parse time maps each top-level body NodeId
+      to its preserved `XmlElement`; `Document` tracks
+      `dirty_body_ids: HashSet<NodeId>` populated by `apply_transaction`
+      from each op's `target_id` (climbed to its top-level body
+      ancestor). `export(Docx)` walks the preserved body; clean
+      NodeIds stay byte-equal, dirty NodeIds swap in the regenerated
+      element. `docx_edit_coverage` body-zero-drop went 10/39 → 39/39;
+      all 162 previously-dropped unknown body tags (`a:*`, `mc:*`,
+      `wps:*`, `w14:*`) survive edits now.
 - [ ] ODT — same playbook against an ODT fixture set.
 
 ## Then — `v0.3.x` — performance + hostile input
