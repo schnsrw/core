@@ -81,44 +81,109 @@ See [`testing-strategy.md`](testing-strategy.md) for the implementation.
 
 ## The phases
 
-### Phase 0 — today
+### Phase 0 — repos coexist · ✅ done
 
-Both repos exist independently. Casual Core builds, ships an npm package,
-deploys a demo. Casual Editor uses its own xml-js pipeline. No integration
-code anywhere.
-
-**Done when:** `@schnsrw/core` is published to npm. ✅ (in progress)
-
----
-
-### Phase 1 — populate the bucket matrix
-
-No editor changes. Just produce the DOCX coverage report.
-
-- Wire the round-trip + lossy-tag suite against the 39 eigenpal fixtures.
-- Publish `docs/docx-coverage.md` on every push.
-- File issues for every entry in Bucket A (we lag the consumer).
-
-**Done when:** the matrix is real, current, and CI-published. We know
-exactly which element classes need work before Bucket A closes.
+Both repos build and ship independently. Casual Core publishes
+`@schnsrw/core`, deploys its demo to GitHub Pages, has the WASM bundle in
+the 1 MB-gzipped range. Casual Editor uses its own xml-js pipeline. No
+integration code anywhere yet.
 
 ---
 
-### Phase 2 — close Bucket A
+### Phase 1 — populate the bucket matrix · ✅ done
 
-Per element class in Bucket A, in editor-frequency order:
+No editor changes. Just produce the DOCX coverage report against the
+consumer's fixture set.
 
-1. Identify the failing tags (`w:foo`, `wp14:bar`, …).
-2. Trace through `crates/s1-format-docx/src/{content_parser, property_parser, writer}.rs`.
-3. Either *parse correctly* (if currently dropped) or *write correctly*
-   (if parsed but not re-emitted).
-4. Re-run the suite, watch the bucket move.
+- Mirror 39 DOCX fixtures from `docx-editor/e2e/fixtures` into
+  `testdocs/docx/eigenpal/`. ✅
+- Wire `crates/s1engine/tests/docx_coverage.rs` to produce the
+  three-bucket scorecard. ✅
+- Publish `docs/docx-coverage.md` on every push. ✅
 
-**Done when:** Bucket A is empty. Casual Core round-trips every DOCX the
-consumer round-trips.
+Baseline reported in `docx-coverage.md`:
 
-This is *the* milestone for integration readiness. Until Bucket A is
-empty, the consumer cannot safely shadow-parse with Casual Core.
+```
+Bucket A — consumer supports, we drop : 140 tags
+Bucket B — we support, consumer drops :   0 tags
+Bucket C — neither supports            :  22 tags
+```
+
+---
+
+### Phase 2 — close Bucket A · ✅ done
+
+The 140-tag Bucket A turned out to be an **architectural** gap, not a
+backlog of per-tag implementations. Hand-coding each tag (5+ months of
+work) was the wrong tool. The right one was a **preservation layer**:
+
+- `crates/s1-ooxml/` parses an OOXML package into a lossless tree and
+  writes it back. ✅ ([`ooxml-design.md`](ooxml-design.md))
+- `s1engine::Document` carries an `Option<s1_ooxml::Package>` as
+  preservation metadata, populated by `Engine::open(Docx)`. ✅
+- `Document::export(Docx)` has three lanes, gated on whether the
+  package is intact and whether the model is dirty (Phase 2a, below). ✅
+
+The Phase 2 gate is met. Re-running the engine-level coverage audit on
+the same 39 fixtures (no edits):
+
+```
+Bucket A — consumer supports, we drop :   0 tags  (was 140)
+Bucket B — we support, consumer drops :  22 tags  (was   0)
+Bucket C — neither supports            :   0 tags  (was  22)
+Zero-drop round-trip                   : 39 / 39
+```
+
+Casual Core now matches or beats Casual Editor on every tag in the
+consumer's fixture set. **Integration is unblocked.**
+
+---
+
+### Phase 2a — edits preserve non-body parts · ✅ done
+
+The first Phase 2 milestone gave zero-drop round-trip *only when no edits
+happened*. The second milestone keeps the preservation package across
+edits, splicing in a regenerated `word/document.xml` while leaving
+every other part untouched.
+
+`Document::export(Docx)` lanes:
+
+1. **No edits + preservation** — re-emit the package verbatim. Zero-drop.
+2. **Edits + preservation** — regenerate `word/document.xml` from the
+   model, swap into a clone of the preserved package, write.
+3. **No preservation** — model-only writer (legacy path).
+
+New regression test `docx_edit_coverage` on the same 39 fixtures:
+
+```
+non-body parts preserved (Phase 2a)  : 39 / 39   ✓ contract met
+body zero-drop                        : 10 / 39   ← Phase 2b target
+```
+
+Every theme, font, customXml, footnote, header, comment, embedded
+image, style, numbering definition, and relationship table survives a
+Casual Editor save through `@schnsrw/core` — even when the body is
+modified.
+
+---
+
+### Phase 2b — body preservation under edits · 🟡 next
+
+Body unknowns inside `word/document.xml` still drop on edit because the
+body is regenerated wholesale from `DocumentModel`. The remaining work:
+
+1. During `read_with_package`, populate a side-table
+   `HashMap<NodeId, XmlElementHandle>` mapping each projected
+   paragraph / table / sectPr to the original `s1-ooxml::XmlElement`.
+2. Track dirty `NodeId`s through `apply`, `apply_transaction`, `undo`,
+   `redo`.
+3. Replace the splice path in `export_docx_spliced`: walk the preserved
+   body's children in order. For each that maps to a clean `NodeId`,
+   copy verbatim. For dirty ones, regenerate from the model. Unknown
+   elements (never projected) ride through untouched.
+
+**Done when:** `docx_edit_coverage`'s "body zero-drop" climbs from
+10/39 to 39/39. Estimated one week of focused work.
 
 ---
 
@@ -138,34 +203,25 @@ fixture similarity bucket for two consecutive releases.
 
 ---
 
-### Phase 4 — element-level migration
+### Phase 4 — element-level migration in the editor
 
-Switch specific OOXML element families from xml-js to Casual Core. Easiest
-first (Bucket B wins — instant fidelity bump for the consumer):
+Once shadow parsing is clean, the editor starts cutting over: each
+element family swaps from xml-js to Casual Core behind a feature flag,
+independently revertible.
 
 Suggested order:
 
-1. **Bucket B wins (do these first — they're wins the moment we ship):**
-   - Any class where eigenpal drops and we don't.
-2. **Bucket A core:**
-   1. Paragraph properties (alignment, spacing, indent)
-   2. Run properties (bold, italic, color, font, size)
-   3. Styles + style table
-   4. Tables (simple → merged → nested)
-   5. Lists + numbering
-   6. Headers + footers
-   7. Images (inline → floating)
-   8. Sections, page properties
-3. **Bucket C (longest tail — multi-quarter):**
-   - Fields (`w:fldChar`, `w:instrText`)
-   - Track changes
-   - Form controls
-   - Math (OMML)
+1. **Bucket B wins first** — every class where xml-js drops and Casual
+   Core preserves. Flipping the flag is an immediate fidelity bump for
+   editor users with zero risk of regression for tags eigenpal already
+   handled.
+2. **Bucket A** — paragraphs, runs, styles, tables, lists, headers,
+   footers, images, sections. These already round-trip equivalently;
+   migration here is about removing xml-js code, not gaining fidelity.
+3. **Bucket C** — fields, track changes, form controls, math. Long-tail
+   work; do these last because they're hard for both implementations.
 
-Each step is one PR in the editor repo, behind a feature flag,
-independently revertible.
-
-**Done when:** every Bucket A and Bucket B class is served by Casual Core.
+**Done when:** every relevant element class is served by Casual Core.
 
 ---
 
@@ -188,13 +244,14 @@ format, close it, integrate.
 
 ## What gates promotion between phases
 
-| Metric | Phase 2 | Phase 3 | Phase 4 | Phase 5 |
-| --- | --- | --- | --- | --- |
-| Bucket A — element classes outstanding | 0 | 0 | 0 | 0 |
-| DOCX round-trip — text content preserved | ≥ 95 % | ≥ 99 % | 100 % | 100 % |
-| DOCX round-trip — paragraph count match | ≥ 95 % | ≥ 99 % | 100 % | 100 % |
-| Lossy-tag report — no new losses vs xml-js | yes | yes | yes | yes |
-| Perf — Casual Core ≤ 2× xml-js wall time | — | yes | yes | yes |
+| Metric | Phase 2 | Phase 2a | Phase 2b | Phase 3 | Phase 4 |
+| --- | --- | --- | --- | --- | --- |
+| Bucket A — outstanding tags | 0 | 0 | 0 | 0 | 0 |
+| No-edits zero-drop | ✅ 39/39 | 39/39 | 39/39 | 39/39 | 39/39 |
+| Non-body preserved on edits | — | ✅ 39/39 | 39/39 | 39/39 | 39/39 |
+| Body zero-drop on edits | — | 10/39 | **39/39** | 39/39 | 39/39 |
+| Lossy-tag report — no regression vs xml-js | yes | yes | yes | yes | yes |
+| Perf — Casual Core ≤ 2× xml-js wall time | — | — | yes | yes | yes |
 
 Each metric is produced by the test suite in
 [`testing-strategy.md`](testing-strategy.md). Regressions fail the CI

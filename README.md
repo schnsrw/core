@@ -14,7 +14,7 @@ Casual Core sits underneath everything in Casual Office:
 
 ## Status
 
-`v0.1.0` · pre-release · workspace builds and passes the test suite on CI.
+`v0.1.0` · pre-release · workspace builds and passes 1,116 tests on CI.
 
 | Format | Read | Write |
 | --- | --- | --- |
@@ -23,6 +23,21 @@ Casual Core sits underneath everything in Casual Office:
 | Markdown | ✓ | ✓ |
 | Plain text | ✓ | ✓ |
 | PDF  | – | ✓ (export only) |
+
+### DOCX fidelity (measured against the 39-fixture consumer set)
+
+| Path | Zero-drop |
+| --- | --- |
+| Open DOCX → save DOCX (no edits) | **39 / 39** |
+| Open DOCX → save DOCX (edits, non-body parts) | **39 / 39** |
+| Open DOCX → save DOCX (edits, body content) | 10 / 39 — Phase 2b target |
+
+The preservation layer (`crates/s1-ooxml/`) keeps theme, fontTable,
+customXml, headers/footers, footnotes, endnotes, comments, numbering,
+styles, images, rels, and content-types intact across the consumer's
+save path. See [`docs/integration-plan.md`](docs/integration-plan.md)
+for the migration plan and [`docs/docx-coverage.md`](docs/docx-coverage.md)
+for the live scorecard.
 
 ## Quick start — JavaScript
 
@@ -61,6 +76,7 @@ let pdf = doc.export(Format::Pdf)?;
 crates/        Pure-Rust workspace
   s1-model       Zero-dep document AST
   s1-ops         Operations / transactions / undo (internal)
+  s1-ooxml       OOXML preservation layer — lossless package read/write
   s1-format-*    Per-format readers and writers
   s1-convert     Cross-format conversion + legacy .doc reader
   s1-layout      Layout / pagination (used by PDF export)

@@ -155,35 +155,87 @@ It does *not* attempt to preserve:
 That's enough for the **tag-census** round-trip test to be zero-drop,
 which is the metric the integration plan gates on.
 
-## Edit projection (not built in this crate)
+## Edit projection — how the layers fit together (current state)
 
-This crate is read-only-or-rewrite — it doesn't expose editing.
-`s1-format-docx` will:
+This crate is preservation-only — it doesn't expose editing.
+`s1engine::Document` owns the bridge between preservation and projection:
 
-1. Read DOCX → `Package` (this crate) → project into `Document`
-   (`s1-model`) for the parts of WordprocessingML it understands.
-2. Hold the `Package` and the projected `Document` together (probably as
-   `(Package, Document)` inside `s1engine::Document`).
-3. On write, walk the original `Package`, replace the editable subtrees
-   with their re-projected forms from the modified `Document`, leave
-   everything else untouched.
+1. `Engine::open(Format::Docx)` calls
+   `s1_format_docx::reader::read_with_package(bytes)`, which returns
+   both a projected `DocumentModel` *and* the full `Package`.
+2. `s1engine::Document` stores both — model in the `model` field,
+   package in the `preservation` field, plus a `model_dirty` flag.
+3. On `Document::export(Docx)`:
+   - `!model_dirty`  →  `Package::write()` directly (verbatim).
+   - `model_dirty + preservation`  →  the **splice path** in
+     `s1engine::Document::export_docx_spliced`: regenerate
+     `word/document.xml` from the model via the existing DOCX writer,
+     swap that part into a clone of the preserved `Package`, write the
+     clone. Every other part rides through.
+4. Any mutation through the operation system (`apply`,
+   `apply_transaction`, `undo`, `redo`, `update_toc`) sets
+   `model_dirty = true`. Escape-hatch mutation (`model_mut`,
+   `metadata_mut`) drops preservation entirely.
 
-That's the next layer of work. This crate is only concerned with making
-that future layer possible by ensuring **nothing is lost on round-trip
-through `Package`**.
+This gives the consumer two of the three lossless cases out of the box:
+
+| Path | Lossless? |
+| --- | --- |
+| Open + export (no edits) | ✅ verbatim |
+| Open + edit + export — non-body parts | ✅ ride through |
+| Open + edit + export — unknowns inside `word/document.xml` | ❌ Phase 2b |
+
+## Phase 2b — body preservation under edits
+
+The remaining gap is unknown elements *inside* `word/document.xml`.
+The current splice regenerates the whole body, so anything we never
+projected into `DocumentModel` (DrawingML / VML / SDT / complex-script
+properties, etc.) is gone the moment the user edits.
+
+Plan:
+
+1. **Side-table**: during `read_with_package`, populate a
+   `HashMap<NodeId, XmlElementHandle>` that points each projected
+   paragraph / table / sectPr back at its origin
+   `s1_ooxml::XmlElement`. Stored alongside `Package` on
+   `s1engine::Document`.
+2. **Dirty NodeIds**: extend `s1_ops::Operation` so we can extract the
+   set of `NodeId`s that an operation touches. `Document::apply` /
+   `apply_transaction` accumulate dirty IDs into a `HashSet<NodeId>`.
+3. **Per-node splice**: rewrite `export_docx_spliced` so it walks the
+   preserved body's children in order. For each child:
+   - If the side-table tells us which `NodeId` it projected to and
+     that NodeId is clean → copy the original `XmlElement` verbatim.
+   - If the NodeId is dirty → re-emit from the model via the existing
+     element writer.
+   - If the side-table has no entry (we never projected this child) →
+     copy verbatim. This is how unknowns ride through.
+
+Effect: the body Bucket A closes the same way the no-edits Bucket A
+did — structurally, not per-tag.
 
 ## Test gates
 
-Before this crate ships as "passthrough complete":
+These run on every push. Regression on any of them fails CI.
 
-1. **Per-part tag census round-trip is zero-drop** on every fixture in
-   `testdocs/docx/eigenpal/`.
-2. **`Package::parse(b).write()` re-parses to a structurally equal
-   `Package`** on every fixture.
-3. Hostile-input tests: malformed XML, truncated zip, missing
-   `[Content_Types].xml`, circular relationships — none of these panic.
-4. Property tests on the XML AST: random trees survive
-   `serialize → parse` round trip.
+1. **`s1-ooxml::passthrough`** — every fixture in
+   `testdocs/docx/eigenpal/` parses + writes via `Package` with zero
+   tag drop. ✅ today: 39/39.
+2. **`s1engine::docx_coverage`** — engine-level coverage scorecard
+   (no-edits path). ✅ today: 39/39 zero-drop, Bucket A = 0.
+3. **`s1engine::docx_edit_coverage`** — engine-level coverage scorecard
+   (with-edits path). Asserts non-body preservation on every fixture.
+   ✅ today: 39/39 non-body preserved; 10/39 body-zero-drop (Phase 2b
+   target: 39/39).
+4. **Per-crate unit tests** — `Package`, `XmlTree`, `ContentTypes`,
+   `Relationships`. ✅ today: green.
+
+Future gates (not yet wired):
+
+- Hostile-input tests at the `s1-ooxml` layer (truncated zips, malformed
+  XML, missing `[Content_Types].xml`, circular relationships).
+- Property tests on the XML AST: random trees survive
+  `serialize → parse` round trip.
 
 ## Dependencies
 

@@ -3,9 +3,9 @@
 Living document. Targets are guidelines, not contracts. Open issues
 override anything written here.
 
-## Now — `v0.1.x`
+## Now — `v0.1.x` — bootstrap
 
-Status: just shipped the initial public commit. Stabilising.
+Status: scaffolding done, CI green, foundation laid.
 
 - [x] Strip the editor / server / CRDT / spreadsheet weight inherited from
       the old `doc-engine` repo.
@@ -14,20 +14,39 @@ Status: just shipped the initial public commit. Stabilising.
       `convert_to_string`, `extract_text`).
 - [x] `@schnsrw/core` npm package scaffolding.
 - [x] GitHub Pages demo as a manual smoke-test surface.
-- [ ] Green CI on every push (Rust + JS + WASM + Pages).
+- [x] Green CI on every push (Rust + JS + WASM + Pages).
 - [ ] First published `0.1.0` npm release.
 
-## Next — `v0.2.x` — fidelity pass
+## Now — `v0.2.x` — DOCX fidelity pass
 
-Goal: round-trip the existing `testdocs/` set without content loss.
+The big rock. Detailed plan in
+[`integration-plan.md`](integration-plan.md) — phases tracked there.
 
-- [ ] Wire `tests/fidelity/` into CI so every push reports the drop rate.
-- [ ] Establish a fidelity floor: regressions fail the build.
-- [ ] Drive the DOCX round-trip drop rate to zero on the bundled fixtures.
-- [ ] Same for ODT.
-- [ ] Audit the dropped tag classes documented in the old eigenpal
-      roundtrip-audit report: fields, advanced numbering, page-number
-      properties, text-box wrap properties.
+- [x] Mirror eigenpal's 39 DOCX fixtures into `testdocs/docx/eigenpal/`.
+- [x] DOCX coverage scorecard (`tests/docx_coverage.rs`) — three-bucket
+      matrix on every push, results in `docs/docx-coverage.md`.
+- [x] **Phase 2** — `s1-ooxml` preservation layer.
+      `crates/s1-ooxml/` parses any OOXML package losslessly and writes
+      it back. 39/39 fixtures round-trip with zero tag loss in
+      `tests/passthrough.rs`.
+- [x] **Phase 2 wire-up** — `s1engine::Document` carries an
+      `Option<s1_ooxml::Package>` preservation field; `export(Docx)`
+      re-emits it verbatim while preservation is intact.
+      Bucket A collapsed 140 → 0 on the no-edits path; Bucket B grew
+      0 → 22 (we now lead the consumer on tags they're known to drop).
+- [x] **Phase 2a** — preservation survives edits. The package is kept
+      across mutation; `export(Docx)` splices the regenerated
+      `word/document.xml` into a clone of the preserved package so
+      every other part (theme, fontTable, customXml, headers, footers,
+      footnotes, endnotes, comments, numbering, styles, images, rels,
+      content types) rides through unchanged. New test
+      `tests/docx_edit_coverage.rs` is the regression gate.
+- [ ] **Phase 2b** — body preservation under edits. Side-table maps
+      each projected paragraph / table / sectPr to its origin in the
+      preserved `XmlElement`; dirty-NodeId tracking drives a per-node
+      splice so body unknowns ride through even when edits happen.
+      Drives `docx_edit_coverage` body-zero-drop from 10/39 → 39/39.
+- [ ] ODT — same playbook against an ODT fixture set.
 
 ## Then — `v0.3.x` — performance + hostile input
 
@@ -40,11 +59,12 @@ Goal: round-trip the existing `testdocs/` set without content loss.
 
 ## Later — `v1.0` — API freeze
 
-- [ ] Re-tighten clippy to `-D warnings` after the inherited backlog is fixed.
+- [ ] Re-tighten clippy to `-D warnings` after the inherited backlog is
+      fixed.
 - [ ] Lock down the JS public API surface (`init`, `convert`,
       `convertToString`, `detectFormat`, `extractText`).
-- [ ] Lock down the Rust public API surface (`Engine`, `Document`, `Format`,
-      `Error`).
+- [ ] Lock down the Rust public API surface (`Engine`, `Document`,
+      `Format`, `Error`).
 - [ ] Cut `1.0.0` once the API is stable and fidelity is green.
 
 ## Out of scope, forever
