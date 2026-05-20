@@ -15,10 +15,27 @@ use crate::format::Format;
 pub struct Document {
     model: DocumentModel,
     history: History,
-    /// Lossless preservation of the original input — kept after `open` so
-    /// `export(Docx)` can round-trip the file byte-equivalently when no
-    /// edits have happened. Cleared the moment any mutation runs.
+    /// Lossless preservation of the original input.
+    ///
+    /// Populated by [`Engine::open(Format::Docx)`]. While preservation is
+    /// `Some` *and* `model_dirty == false`, `export(Docx)` re-emits the
+    /// package verbatim — perfect round-trip for the converter case.
+    ///
+    /// Once any edit-class mutation runs (`apply`, `apply_transaction`,
+    /// `undo`, `redo`, `update_toc`), `model_dirty` flips to `true`.
+    /// `export(Docx)` then splices the regenerated `word/document.xml`
+    /// into the preserved package so every *other* part (theme, fontTable,
+    /// customXml, headers, footers, footnotes, endnotes, comments,
+    /// numbering, styles, images, rels, content types) still rides
+    /// through untouched.
+    ///
+    /// Hard escape hatches (`model_mut`, `metadata_mut`) drop preservation
+    /// entirely — once a caller bypasses the operation system, we can't
+    /// reason about which parts of the model agree with the package.
     preservation: Option<s1_ooxml::Package>,
+    /// `true` once an edit-class mutation has been applied since open.
+    /// Drives the splice path in `export(Docx)`.
+    model_dirty: bool,
 }
 
 impl Document {
@@ -28,6 +45,7 @@ impl Document {
             model: DocumentModel::new(),
             history: History::new(),
             preservation: None,
+            model_dirty: false,
         }
     }
 
@@ -37,34 +55,43 @@ impl Document {
             model,
             history: History::new(),
             preservation: None,
+            model_dirty: false,
         }
     }
 
     /// Create a Document from a model **plus** the lossless OOXML package it
-    /// came from. The package is held as preservation metadata: if no edits
-    /// happen between this call and the next `export(Docx)`, the package is
-    /// re-serialised verbatim, preserving every tag that `DocumentModel`
-    /// would otherwise drop.
+    /// came from. The package is held as preservation metadata. After this
+    /// call, `is_dirty() == false`; the next `export(Docx)` is a verbatim
+    /// re-emission. Edit-class mutations flip the dirty flag and switch
+    /// `export(Docx)` to the splice path (regenerate `word/document.xml`,
+    /// keep every other part).
     pub fn from_model_with_package(model: DocumentModel, package: s1_ooxml::Package) -> Self {
         Self {
             model,
             history: History::new(),
             preservation: Some(package),
+            model_dirty: false,
         }
     }
 
-    /// `true` if the document still has its original preservation package
-    /// (i.e. no mutation has happened since it was opened).
+    /// `true` if the document still has its original preservation package.
     pub fn has_preservation(&self) -> bool {
         self.preservation.is_some()
     }
 
-    /// Drop the preservation package. Called automatically whenever the
-    /// document is mutated through the engine API; exposed publicly so
-    /// callers that bypass the engine API (via `model_mut` etc.) can
-    /// signal the same.
+    /// `true` if any edit-class mutation has been applied since the document
+    /// was opened or last cleaned. Drives the splice path in `export(Docx)`.
+    pub fn is_dirty(&self) -> bool {
+        self.model_dirty
+    }
+
+    /// Drop the preservation package entirely. Hard escape hatch for
+    /// callers that bypass the operation system and want to signal "I just
+    /// scrambled the model — don't try to preserve anything from the
+    /// original."
     pub fn invalidate_preservation(&mut self) {
         self.preservation = None;
+        self.model_dirty = true;
     }
 
     /// Borrow the preservation package, if any. Mainly for tests and
@@ -214,7 +241,7 @@ impl Document {
     /// On success, the transaction is pushed onto the undo stack.
     /// On failure, all operations are rolled back.
     pub fn apply_transaction(&mut self, txn: &Transaction) -> Result<(), Error> {
-        self.preservation = None;
+        self.model_dirty = true;
         self.history.apply(&mut self.model, txn)?;
         Ok(())
     }
@@ -230,13 +257,13 @@ impl Document {
 
     /// Undo the last transaction. Returns `true` if something was undone.
     pub fn undo(&mut self) -> Result<bool, Error> {
-        self.preservation = None;
+        self.model_dirty = true;
         Ok(self.history.undo(&mut self.model)?)
     }
 
     /// Redo the last undone transaction. Returns `true` if something was redone.
     pub fn redo(&mut self) -> Result<bool, Error> {
-        self.preservation = None;
+        self.model_dirty = true;
         Ok(self.history.redo(&mut self.model)?)
     }
 
@@ -285,8 +312,8 @@ impl Document {
     /// content has changed since the TOC was inserted.
     pub fn update_toc(&mut self) {
         // TOC update rewrites cached entry paragraphs — that's a model
-        // mutation, drop preservation.
-        self.preservation = None;
+        // mutation, mark dirty so export splices through the package.
+        self.model_dirty = true;
         // First, find all TOC nodes and their max_level
         let body_id = match self.model.body_id() {
             Some(id) => id,
@@ -609,18 +636,30 @@ impl Document {
 
     /// Export the document to bytes in the given format.
     ///
-    /// For DOCX, if the document was opened from bytes and **has not been
-    /// mutated since**, the original preservation package is re-emitted
-    /// verbatim — no information is lost. After any mutation the export
-    /// falls back to building bytes from the model.
+    /// For DOCX, fidelity behaviour:
+    ///
+    /// 1. **Open + export, no edits** — the preservation package is
+    ///    re-emitted verbatim. Round-trip is lossless.
+    /// 2. **Open + edit + export** — `word/document.xml` is regenerated
+    ///    from the projected `DocumentModel`, but spliced into the
+    ///    preserved package. Every other part (theme, fontTable,
+    ///    customXml, headers, footers, footnotes, endnotes, comments,
+    ///    numbering, styles, images, rels, content types) rides
+    ///    through unchanged.
+    /// 3. **Document constructed without a package, or `invalidate_preservation`
+    ///    called, or `model_mut` / `metadata_mut` accessed** — the export
+    ///    falls back to building bytes from the model alone.
     pub fn export(&self, format: Format) -> Result<Vec<u8>, Error> {
         match format {
             #[cfg(feature = "docx")]
             Format::Docx => {
                 if let Some(pkg) = &self.preservation {
-                    return Ok(pkg
-                        .write()
-                        .map_err(|e| Error::Format(format!("ooxml package write: {e}")))?);
+                    if !self.model_dirty {
+                        return Ok(pkg
+                            .write()
+                            .map_err(|e| Error::Format(format!("ooxml package write: {e}")))?);
+                    }
+                    return Ok(self.export_docx_spliced(pkg)?);
                 }
                 Ok(s1_format_docx::write(&self.model)?)
             }
@@ -646,6 +685,43 @@ impl Document {
                 format
             ))),
         }
+    }
+
+    /// Splice path for `export(Docx)` when edits have happened.
+    ///
+    /// Regenerates `word/document.xml` from the model via the existing DOCX
+    /// writer, then replaces just that part inside a clone of the preserved
+    /// package. Every other part — theme, fontTable, customXml, headers,
+    /// footers, footnotes, endnotes, comments, numbering, styles, images,
+    /// rels, content types — rides through unchanged.
+    ///
+    /// Limitation (Phase 2a): unknown OOXML inside `word/document.xml`
+    /// itself is **not** preserved across edits. That requires the
+    /// NodeId-keyed body-merge work tracked as Phase 2b.
+    #[cfg(feature = "docx")]
+    fn export_docx_spliced(&self, pkg: &s1_ooxml::Package) -> Result<Vec<u8>, Error> {
+        // Step 1: regenerate a full DOCX from the model.
+        let regenerated_bytes = s1_format_docx::write(&self.model)?;
+
+        // Step 2: parse the regenerated bytes to extract its document.xml part.
+        let regenerated_pkg = s1_ooxml::Package::parse(&regenerated_bytes)
+            .map_err(|e| Error::Format(format!("re-parse regenerated docx: {e}")))?;
+        let new_doc_part = regenerated_pkg
+            .parts
+            .get("word/document.xml")
+            .ok_or_else(|| Error::Format("regenerated DOCX has no word/document.xml".to_owned()))?
+            .clone();
+
+        // Step 3: clone the preserved package and swap document.xml in.
+        let mut patched = pkg.clone();
+        patched
+            .parts
+            .insert("word/document.xml".to_owned(), new_doc_part);
+
+        // Step 4: write the patched package.
+        patched
+            .write()
+            .map_err(|e| Error::Format(format!("ooxml package write: {e}")))
     }
 
     /// Export the document as PDF using the provided font database.

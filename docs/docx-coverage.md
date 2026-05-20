@@ -173,10 +173,62 @@ Casual Editor inherits the moment it switches its file-open path to
 
 The "no edits" path is the **converter** use case — it's now production-quality.
 
-### What's still ahead
+## Update — Phase 2a (with-edits) — splice path
 
-The "with edits" path still falls back to the model-based writer once any
-mutation runs, which means edits to a DOCX containing unknown tags will
-still lose those tags on save. Closing that gap is the next milestone:
-extend `s1-ooxml::Package` with an edit-aware API that lets `s1-format-docx`
-patch the projected subtree while leaving unknown OOXML alone.
+`Document::export(Docx)` now has three lanes:
+
+1. **No edits + preservation** — re-emit the package verbatim. Zero-drop.
+2. **Edits + preservation (Phase 2a)** — regenerate only `word/document.xml`
+   from the model, splice it into a clone of the preserved package, write
+   the package. Every other part (theme, fontTable, customXml, headers,
+   footers, footnotes, endnotes, comments, numbering, styles, images,
+   rels, content types) rides through untouched.
+3. **No preservation** — model-only export (the original behaviour).
+
+New regression test `docx_edit_coverage` exercises lane 2 directly:
+
+```
+═══ DOCX edit-path coverage report ═══
+Fixtures total                        : 39
+  parsed                              : 39
+  re-written after edit               : 39
+  non-body parts preserved (Phase 2a)  : 39 / 39   ✓ contract met
+  body zero-drop (Phase 2b target)      : 10 / 39   ← gap remains
+```
+
+Non-body preservation is the Phase 2a contract. The test asserts it on
+every fixture; any regression fails CI. Body preservation under edits
+matches the old writer's `10 / 39` baseline — closing it is Phase 2b.
+
+### What this enables for the consumer (updated)
+
+| Path | Phase 1 | Phase 2a (now) | Phase 2b (target) |
+| --- | --- | --- | --- |
+| Open DOCX → save DOCX (no edits) | Lossy | **Zero-drop** | Zero-drop |
+| Open DOCX → save DOCX (with edits) | Lossy on everything | **Non-body preserved** | Zero-drop |
+| Open DOCX → save PDF / MD / TXT / ODT | Lossy by target | Lossy by target | Lossy by target |
+
+The editor's typical save path falls under "open DOCX → save DOCX (with
+edits)", so Phase 2a is the meaningful gain for them today: every theme,
+font, custom-XML, footnote, header, comment, and embedded image now
+survives a Casual Editor save.
+
+### What's still ahead — Phase 2b
+
+Body unknowns still drop on edit because `word/document.xml` is
+regenerated wholesale from `DocumentModel`. Closing this needs the
+**NodeId-keyed body-merge**:
+
+- During projection, record a `HashMap<NodeId, XmlElementHandle>` so each
+  projected paragraph / table / sectPr has a back-reference to the
+  original `s1-ooxml::XmlElement`.
+- During the apply / apply_transaction / undo / redo path, mark
+  individual `NodeId`s as dirty.
+- During the export splice, walk the original body's `XmlElement`s in
+  order. For each one we recognise as projected, re-emit from the model
+  *if dirty*, else copy verbatim. Elements we never projected (unknowns)
+  ride through verbatim.
+
+That algorithm closes the body Bucket A on edits too. Roughly a week of
+careful work; the infrastructure (`s1-ooxml::Package` + `Document::is_dirty`
++ regression tests) is already in place.
