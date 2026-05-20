@@ -1,5 +1,15 @@
 name: Release
 
+# Cuts a GitHub release on a `vX.Y.Z` tag push. Builds the WASM bundle
+# and the `@schnsrw/core` TS wrapper, packs them into a tarball, and
+# attaches the tarball to the release so people can download a tested
+# build straight from GitHub.
+#
+# The npm publish step has been intentionally removed for the 0.x line.
+# The live demo at https://schnsrw.github.io/core/ is deployed by
+# `pages.yml` on every push to `main`, so end users have a working
+# in-browser test surface even without an npm package.
+
 on:
   push:
     tags:
@@ -11,8 +21,8 @@ permissions:
   id-token: write
 
 jobs:
-  publish:
-    name: Build + publish @schnsrw/core
+  release:
+    name: Build wasm + cut GitHub release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +39,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: "https://registry.npmjs.org"
 
       - name: Build wasm
         run: wasm-pack build ffi/wasm --target web --release --out-dir ../../js/wasm
@@ -40,13 +49,18 @@ jobs:
           npm install
           npm run build:ts
 
-      - name: Publish to npm
-        working-directory: js
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+      - name: Pack release tarball
+        id: pack
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          OUT="casual-core-${VERSION}.tar.gz"
+          tar -czf "$OUT" \
+            -C js \
+            dist wasm package.json README.md
+          echo "tarball=$OUT" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          files: ${{ steps.pack.outputs.tarball }}
