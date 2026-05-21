@@ -136,6 +136,52 @@ pub fn parse_content_body(
                     _ => {}
                 }
             }
+            Ok(Event::Empty(ref e)) => {
+                // Self-closing block-level elements at body level —
+                // most commonly `<text:p .../>` (empty paragraph) but
+                // also `<text:h .../>`. quick-xml emits these as
+                // `Event::Empty` rather than a Start+End pair, so the
+                // Start arm above won't fire. Without this branch they
+                // get silently dropped, breaking 1:1 alignment between
+                // model body children and preserved body block-level
+                // elements — which collapses ODT Phase 2b's per-NodeId
+                // splice back to Phase 2a.
+                let local = e.local_name();
+                match local.as_ref() {
+                    b"p" => {
+                        insert_empty_paragraph(
+                            doc,
+                            e,
+                            ctx,
+                            body_id,
+                            body_child_index,
+                            false,
+                            None,
+                        )?;
+                        body_child_index += 1;
+                    }
+                    b"h" => {
+                        let level = get_attr(e, b"outline-level")
+                            .and_then(|v| v.parse::<u8>().ok())
+                            .unwrap_or(1);
+                        insert_empty_paragraph(
+                            doc,
+                            e,
+                            ctx,
+                            body_id,
+                            body_child_index,
+                            true,
+                            Some(level),
+                        )?;
+                        body_child_index += 1;
+                    }
+                    _ => {
+                        // Other self-closing body-level elements
+                        // (sequence-decl, range markers, …) — preserved
+                        // through the package layer; no model node.
+                    }
+                }
+            }
             Ok(Event::End(ref e)) if e.local_name().as_ref() == b"text" => break,
             Ok(Event::Eof) => break,
             Err(e) => return Err(OdtError::Xml(e.to_string())),
@@ -143,6 +189,42 @@ pub fn parse_content_body(
         }
     }
 
+    Ok(())
+}
+
+/// Insert an empty Paragraph node carrying just its style reference —
+/// used for self-closing `<text:p/>` and `<text:h/>` from the body
+/// parser's `Event::Empty` arm.
+fn insert_empty_paragraph(
+    doc: &mut DocumentModel,
+    start: &quick_xml::events::BytesStart<'_>,
+    ctx: &ParseContext,
+    parent_id: s1_model::NodeId,
+    index: usize,
+    is_heading: bool,
+    heading_level: Option<u8>,
+) -> Result<(), OdtError> {
+    let para_id = doc.next_id();
+    let mut para_node = Node::new(para_id, NodeType::Paragraph);
+    if let Some(style_name) = get_attr(start, b"style-name") {
+        if let Some(auto_attrs) = ctx.auto_styles.get(&style_name) {
+            para_node.attributes.merge(auto_attrs);
+        } else {
+            para_node
+                .attributes
+                .set(AttributeKey::StyleId, AttributeValue::String(style_name));
+        }
+    }
+    if is_heading {
+        if let Some(level) = heading_level {
+            let style_name = format!("Heading{level}");
+            para_node
+                .attributes
+                .set(AttributeKey::StyleId, AttributeValue::String(style_name));
+        }
+    }
+    doc.insert_node(parent_id, index, para_node)
+        .map_err(|e| OdtError::InvalidStructure(format!("{e:?}")))?;
     Ok(())
 }
 

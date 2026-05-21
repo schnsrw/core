@@ -52,11 +52,12 @@ impl Engine {
         }
 
         // ODT mirrors the DOCX preservation entry — `export(Odt)`
-        // re-emits the package verbatim when not dirty (ODT Phase 2).
+        // re-emits the package verbatim when not dirty (ODT Phase 2),
+        // and the per-NodeId origin powers the body splice (Phase 2b).
         #[cfg(feature = "odt")]
         if matches!(format, Format::Odt) {
-            let (model, pkg) = s1_format_odt::read_with_package(data)?;
-            return Ok(Document::from_model_with_odf_package(model, pkg));
+            let (model, pkg, origin) = s1_format_odt::read_with_package_and_origin(data)?;
+            return Ok(Document::from_odt_open_state(model, pkg, origin));
         }
 
         let model = match format {

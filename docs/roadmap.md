@@ -79,10 +79,21 @@ The big rock. Detailed plan in
         cascade — `style:*-properties` 88+60+16+15+10+4x,
         `style:font-face` 18x, `office:font-face-decls`,
         `office:scripts` — all recovered).
-  - [ ] Phase 2b — per-NodeId body splice (BodyOrigin for ODT).
-        Remaining 11 dropped classes are all body-internal
-        (`draw:frame` 10x, `text:span` 8x, `text:s` 29x,
-        `text:soft-page-break` 11x, `svg:title`/`desc`, …).
+  - [x] **Phase 2b** — per-NodeId body splice. `s1_format_odt::BodyOrigin`
+        mirrors the DOCX one; `Document` carries an
+        `odf_body_origin: Option<…>`; `export(Odt)` walks preserved
+        `<office:text>` and only swaps dirty NodeIds, so untouched
+        paragraphs / headings / tables keep their preserved
+        `XmlElement` verbatim. Required fixing a body-parser gap:
+        self-closing `<text:p/>` were silently dropped via the
+        `Event::Empty` arm — added `insert_empty_paragraph()` and
+        the Empty handler so model body and preserved body align
+        1:1. Effect: **`odt_edit_coverage` body-zero-drop = 4 / 4**
+        (was 0 / 4). All 11 remaining body-internal classes —
+        `draw:frame`, `text:span`, `text:s`, `text:soft-page-break`,
+        `svg:title`/`desc`, `table:table-columns`,
+        `text:sequence-decl[s]`, `draw:image`, `draw:object` — now
+        survive edits via the preserved XmlElement.
 - [ ] **DOCX → PDF visual fidelity** — user-reported ~2/100 fidelity
       on the rendered PDF (2026-05-22). Path: `s1-format-docx::read` →
       `DocumentModel` → `s1-layout::layout` → `s1-format-pdf::write_pdf`.

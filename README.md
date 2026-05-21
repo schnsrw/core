@@ -24,13 +24,31 @@ Casual Core sits underneath everything in Casual Office:
 | Plain text | ✓ | ✓ |
 | PDF  | – | ✓ (export only) |
 
-### DOCX fidelity (measured against the 39-fixture consumer set)
+### Round-trip fidelity (structural — tag-census level)
+
+DOCX (against the 39-fixture eigenpal-mirrored set):
 
 | Path | Zero-drop |
 | --- | --- |
 | Open DOCX → save DOCX (no edits) | **39 / 39** |
 | Open DOCX → save DOCX (edits, non-body parts) | **39 / 39** |
 | Open DOCX → save DOCX (edits, body content) | **39 / 39** |
+
+ODT (against the 4 testdocs/odt/ fixtures — corpus expansion is open work):
+
+| Path | Zero-drop |
+| --- | --- |
+| Open ODT → save ODT (no edits) | **4 / 4** |
+| Open ODT → save ODT (edits, non-body parts) | **4 / 4** |
+| Open ODT → save ODT (edits, body content) | **4 / 4** |
+
+These are **structural** measurements — every XML tag class in the
+input body survives the round-trip on the output. Every drawing,
+math element, textbox, vector shape, and SVG primitive inside
+untouched paragraphs / tables rides through verbatim via the
+preservation layers (`crates/s1-ooxml/`, `crates/s1-odf/`). What
+the preservation layers do *not* yet measure is rendered visual
+fidelity (e.g., DOCX → PDF — see "Known gaps" below).
 
 The preservation layer (`crates/s1-ooxml/`) keeps theme, fontTable,
 customXml, headers/footers, footnotes, endnotes, comments, numbering,
@@ -46,14 +64,17 @@ for the live scorecard.
   PDF pipeline lives at `crates/s1-layout/` and `crates/s1-format-pdf/`,
   but there's currently no visual-fidelity test gating it. Tracked on
   the [roadmap](docs/roadmap.md) as an immediate task.
-- **ODT round-trip fidelity is partially landed.** No-edits and
-  non-body-on-edits paths both at **4 / 4** zero-drop
+- **ODT round-trip fidelity is at parity with DOCX.** No-edits,
+  non-body-on-edits, and body-on-edits all at **4 / 4** zero-drop
   (`crates/s1engine/tests/odt_coverage.rs` +
-  `crates/s1engine/tests/odt_edit_coverage.rs`). With-edits body
-  content still drops 11 tag classes (down from 20 after Phase 2a's
-  XmlTree-level splice recovered the automatic-styles / font-face /
-  scripts cascade). Closing the remaining 11 is Phase 2b
-  (per-NodeId body splice, mirror of `BodyOrigin` for DOCX).
+  `crates/s1engine/tests/odt_edit_coverage.rs`). Phase 2b's
+  per-NodeId body splice and `s1_format_odt::BodyOrigin` mirror the
+  DOCX shipping path: every drawing, text span, SVG metadata,
+  sequence declaration, soft page break, and other inline ODF
+  construct inside untouched paragraphs rides through verbatim on
+  edit. Larger / more diverse fixture set is the next coverage
+  expansion (LibreOffice / Calligra-authored docs with charts,
+  forms, math).
 
 ## Quick start — JavaScript
 

@@ -42,6 +42,22 @@ pub fn read_with_package(data: &[u8]) -> Result<(DocumentModel, s1_odf::Package)
     Ok((model, package))
 }
 
+/// Read an ODT and return the model, the preservation package, and a
+/// [`BodyOrigin`] mapping every top-level body NodeId back to its
+/// preserved `XmlElement` in `content.xml`. Counterpart of the DOCX
+/// `read_with_package_and_origin`. Foundation for ODT Phase 2b's
+/// per-NodeId body splice — clean NodeIds keep their preserved XML
+/// verbatim across edits.
+pub fn read_with_package_and_origin(
+    data: &[u8],
+) -> Result<(DocumentModel, s1_odf::Package, crate::BodyOrigin), OdtError> {
+    let model = read_model_internal(data)?;
+    let package = s1_odf::Package::parse(data)
+        .map_err(|e| OdtError::InvalidStructure(format!("odf package: {e}")))?;
+    let origin = crate::BodyOrigin::build(&model, &package);
+    Ok((model, package, origin))
+}
+
 fn read_model_internal(data: &[u8]) -> Result<DocumentModel, OdtError> {
     let cursor = Cursor::new(data);
     let mut archive = ZipArchive::new(cursor)?;

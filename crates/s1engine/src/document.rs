@@ -46,6 +46,10 @@ pub struct Document {
     /// `export(Docx)`: clean NodeIds re-emit their preserved XML
     /// verbatim, dirty NodeIds re-render through the writer.
     body_origin: Option<s1_format_docx::BodyOrigin>,
+    /// ODT counterpart of [`body_origin`]. Maps each top-level
+    /// `<office:text>` child NodeId to its preserved `XmlElement`.
+    /// Drives the ODT Phase 2b per-node splice in `export(Odt)`.
+    odf_body_origin: Option<s1_format_odt::BodyOrigin>,
     /// Top-level body NodeIds touched since open. Drives the splice
     /// path — only these get regenerated from the model; everything
     /// else rides through verbatim via [`body_origin`].
@@ -70,6 +74,7 @@ impl Document {
             preservation: None,
             odf_preservation: None,
             body_origin: None,
+            odf_body_origin: None,
             dirty_body_ids: HashSet::new(),
             model_dirty: false,
             body_structural_dirty: false,
@@ -84,6 +89,7 @@ impl Document {
             preservation: None,
             odf_preservation: None,
             body_origin: None,
+            odf_body_origin: None,
             dirty_body_ids: HashSet::new(),
             model_dirty: false,
             body_structural_dirty: false,
@@ -103,6 +109,7 @@ impl Document {
             preservation: Some(package),
             odf_preservation: None,
             body_origin: None,
+            odf_body_origin: None,
             dirty_body_ids: HashSet::new(),
             model_dirty: false,
             body_structural_dirty: false,
@@ -123,6 +130,32 @@ impl Document {
             preservation: None,
             odf_preservation: Some(package),
             body_origin: None,
+            odf_body_origin: None,
+            dirty_body_ids: HashSet::new(),
+            model_dirty: false,
+            body_structural_dirty: false,
+        }
+    }
+
+    /// Create a Document from a model, its ODF preservation package, and
+    /// a per-body-child origin table. Counterpart of [`from_open_state`]
+    /// for ODT inputs — the origin table is what lets `export(Odt)`
+    /// splice individual body elements back verbatim on edit
+    /// (`<text:p>` / `<text:h>` / `<table:table>` / TOC) so unknown
+    /// children inside them (`draw:frame`, `text:span`, `text:s`,
+    /// `text:soft-page-break`, `svg:title/desc`, …) survive.
+    pub fn from_odt_open_state(
+        model: DocumentModel,
+        package: s1_odf::Package,
+        body_origin: s1_format_odt::BodyOrigin,
+    ) -> Self {
+        Self {
+            model,
+            history: History::new(),
+            preservation: None,
+            odf_preservation: Some(package),
+            body_origin: None,
+            odf_body_origin: Some(body_origin),
             dirty_body_ids: HashSet::new(),
             model_dirty: false,
             body_structural_dirty: false,
@@ -146,6 +179,7 @@ impl Document {
             preservation: Some(package),
             odf_preservation: None,
             body_origin: Some(body_origin),
+            odf_body_origin: None,
             dirty_body_ids: HashSet::new(),
             model_dirty: false,
             body_structural_dirty: false,
@@ -171,6 +205,7 @@ impl Document {
         self.preservation = None;
         self.odf_preservation = None;
         self.body_origin = None;
+        self.odf_body_origin = None;
         self.model_dirty = true;
         self.body_structural_dirty = true;
     }
@@ -207,6 +242,7 @@ impl Document {
         self.preservation = None;
         self.odf_preservation = None;
         self.body_origin = None;
+        self.odf_body_origin = None;
         self.body_structural_dirty = true;
         &mut self.model
     }
@@ -228,6 +264,7 @@ impl Document {
         self.preservation = None;
         self.odf_preservation = None;
         self.body_origin = None;
+        self.odf_body_origin = None;
         self.body_structural_dirty = true;
         self.model.metadata_mut()
     }
@@ -804,10 +841,21 @@ impl Document {
                             .write()
                             .map_err(|e| Error::Format(format!("odf package write: {e}")))?);
                     }
-                    // Edits → splice the regenerated content.xml into a
-                    // clone of the preserved package, so styles.xml /
-                    // meta.xml / settings.xml / META-INF / Pictures / etc.
-                    // ride through unchanged (ODT Phase 2a).
+                    // Edits + per-NodeId origin intact → ODT Phase 2b splice:
+                    // walk preserved <office:text>, swap dirty NodeIds
+                    // with regenerated elements at the same position.
+                    if !self.body_structural_dirty
+                        && self
+                            .odf_body_origin
+                            .as_ref()
+                            .map(|o| !o.node_id_order.is_empty())
+                            .unwrap_or(false)
+                    {
+                        return Ok(self.export_odt_phase2b_splice(pkg)?);
+                    }
+                    // Otherwise fall back to the XmlTree-level body-swap
+                    // (Phase 2a): regenerated <office:body> into the
+                    // preserved content.xml.
                     return Ok(self.export_odt_spliced(pkg)?);
                 }
                 Ok(s1_format_odt::write(&self.model)?)
@@ -989,6 +1037,113 @@ impl Document {
         patched
             .write()
             .map_err(|e| Error::Format(format!("ooxml package write: {e}")))
+    }
+
+    /// ODT Phase 2b per-NodeId splice: regenerate only the body children
+    /// whose NodeIds are in `dirty_body_ids`; keep every other body
+    /// element verbatim from the preserved package — including unknown
+    /// ODF inside untouched paragraphs / tables (`draw:frame`,
+    /// `text:span`, `text:s`, `text:soft-page-break`, `svg:title`/`desc`,
+    /// `table:table-columns`, …).
+    ///
+    /// Falls back to the Phase 2a XmlTree-level body-swap if the origin
+    /// table can't be aligned positionally with the current model body.
+    #[cfg(feature = "odt")]
+    fn export_odt_phase2b_splice(&self, pkg: &s1_odf::Package) -> Result<Vec<u8>, Error> {
+        use s1_format_odt::body_origin::{is_block_level, office_text_in, office_text_in_mut};
+        use s1_odf::{PartContent, XmlElement, XmlNode};
+
+        let origin = match &self.odf_body_origin {
+            Some(o) => o,
+            None => return self.export_odt_spliced(pkg),
+        };
+
+        let body_id = self
+            .model
+            .body_id()
+            .ok_or_else(|| Error::Format("document has no body".to_owned()))?;
+        let body_node = self
+            .model
+            .node(body_id)
+            .ok_or_else(|| Error::Format("body NodeId points at nothing".to_owned()))?;
+        if body_node.children.as_slice() != origin.node_id_order.as_slice() {
+            return self.export_odt_spliced(pkg);
+        }
+
+        // Regenerate the model to source per-NodeId XML for dirty entries.
+        let regenerated_bytes = s1_format_odt::write(&self.model)?;
+        let regenerated_pkg = s1_odf::Package::parse(&regenerated_bytes)
+            .map_err(|e| Error::Format(format!("re-parse regenerated odt: {e}")))?;
+        let regenerated_part = regenerated_pkg
+            .parts
+            .get("content.xml")
+            .ok_or_else(|| Error::Format("regenerated ODT has no content.xml".to_owned()))?;
+        let regenerated_tree = match &regenerated_part.content {
+            PartContent::Xml(t) => t,
+            PartContent::Binary(_) => {
+                return Err(Error::Format(
+                    "regenerated content.xml is binary".to_owned(),
+                ));
+            }
+        };
+        let regenerated_text = office_text_in(&regenerated_tree.root).ok_or_else(|| {
+            Error::Format("regenerated content.xml has no <office:text>".to_owned())
+        })?;
+        let regenerated_blocks: Vec<&XmlElement> = regenerated_text
+            .children
+            .iter()
+            .filter_map(|c| match c {
+                XmlNode::Element(el) if is_block_level(&el.name.local_name) => Some(el),
+                _ => None,
+            })
+            .collect();
+        if regenerated_blocks.len() != origin.node_id_order.len() {
+            return self.export_odt_spliced(pkg);
+        }
+
+        // Clone preserved content.xml; walk its <office:text>; for each
+        // block-level child, swap with regenerated only when its
+        // positional NodeId is in dirty_body_ids.
+        let preserved_part = pkg
+            .parts
+            .get("content.xml")
+            .ok_or_else(|| Error::Format("preserved ODT has no content.xml".to_owned()))?;
+        let mut preserved_tree = match &preserved_part.content {
+            PartContent::Xml(t) => t.clone(),
+            PartContent::Binary(_) => {
+                return Err(Error::Format("preserved content.xml is binary".to_owned()));
+            }
+        };
+        let preserved_text = office_text_in_mut(&mut preserved_tree.root).ok_or_else(|| {
+            Error::Format("preserved content.xml has no <office:text>".to_owned())
+        })?;
+
+        let mut block_idx = 0usize;
+        for child in &mut preserved_text.children {
+            if let XmlNode::Element(el) = child {
+                if is_block_level(&el.name.local_name) {
+                    if block_idx >= origin.node_id_order.len() {
+                        return self.export_odt_spliced(pkg);
+                    }
+                    let nid = origin.node_id_order[block_idx];
+                    if self.dirty_body_ids.contains(&nid) {
+                        *el = regenerated_blocks[block_idx].clone();
+                    }
+                    block_idx += 1;
+                }
+            }
+        }
+        if block_idx != origin.node_id_order.len() {
+            return self.export_odt_spliced(pkg);
+        }
+
+        let mut patched = pkg.clone();
+        if let Some(part) = patched.parts.get_mut("content.xml") {
+            part.content = PartContent::Xml(preserved_tree);
+        }
+        patched
+            .write()
+            .map_err(|e| Error::Format(format!("odf package write: {e}")))
     }
 
     /// Splice path for `export(Odt)` when edits have happened.

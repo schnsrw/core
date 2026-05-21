@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **ODT Phase 2b** — per-NodeId body splice. New
+  `s1_format_odt::BodyOrigin` mirrors the DOCX one, mapping each
+  top-level `<office:text>` child NodeId to its preserved
+  `XmlElement`. `Document` carries `odf_body_origin:
+  Option<BodyOrigin>`; new constructor
+  `Document::from_odt_open_state(model, pkg, origin)`.
+  `Engine::open(Odt)` threads the origin through
+  `s1_format_odt::read_with_package_and_origin`.
+  `Document::export(Odt)` walks the preserved `<office:text>` and
+  swaps only the dirty NodeIds with regenerated elements —
+  untouched paragraphs / headings / tables keep their preserved
+  XmlElement verbatim, so every inline drawing / span / soft page
+  break / SVG metadata / sequence declaration rides through
+  unchanged. `odt_edit_coverage` body-zero-drop:
+  **0 / 4 → 4 / 4**.
+- **ODT reader fix** — `parse_content_body` now handles
+  `Event::Empty` for body-level `<text:p/>` and `<text:h/>`. New
+  helper `insert_empty_paragraph()` creates the model node with
+  just its style reference. Without this, self-closing paragraphs
+  were silently dropped — owncloud-example.odt's body shrank from
+  12 preserved blocks to 8 model children, breaking the 1:1
+  alignment required by Phase 2b. After: model body matches the
+  preserved body element-for-element.
 - **ODT Phase 2a** — non-body parts preserved across edits. Because
   ODF nests `<office:automatic-styles>`, `<office:font-face-decls>`,
   and `<office:scripts>` *inside* `content.xml` (unlike OOXML where

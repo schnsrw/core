@@ -3,6 +3,7 @@
 //! This crate provides functions to read ODT files into a `DocumentModel`
 //! and write a `DocumentModel` back to ODT format.
 
+pub mod body_origin;
 pub mod error;
 
 mod content_parser;
@@ -21,6 +22,7 @@ mod xml_util;
 pub mod reader;
 pub mod writer;
 
+pub use body_origin::BodyOrigin;
 pub use error::OdtError;
-pub use reader::{read, read_with_package};
+pub use reader::{read, read_with_package, read_with_package_and_origin};
 pub use writer::write;

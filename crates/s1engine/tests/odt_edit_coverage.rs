@@ -299,13 +299,25 @@ fn odt_edit_coverage_audit() {
     }
 
     // Phase 2a contract: for fixtures that did get re-written, every
-    // non-body part must ride through. Fixtures that didn't trigger
-    // a mutation (`written == false`) are skipped from this gate.
+    // non-body part must ride through.
     assert_eq!(
         non_body_clean,
         written,
-        "{} of {} re-written fixtures lost non-body parts under edit — ODT splice is broken",
+        "{} of {} re-written fixtures lost non-body parts under edit — ODT Phase 2a splice is broken",
         written - non_body_clean,
+        written
+    );
+
+    // Phase 2b contract: body tag census must also survive.
+    // Per-NodeId splice keeps untouched paragraphs / tables /
+    // headings byte-for-byte verbatim — every unknown ODF inside
+    // (drawings, text spans, soft page breaks, SVG metadata, …)
+    // rides through unchanged.
+    assert_eq!(
+        body_zero_drop,
+        written,
+        "{} of {} re-written fixtures dropped body tags on edit — ODT Phase 2b splice is broken",
+        written - body_zero_drop,
         written
     );
 }
