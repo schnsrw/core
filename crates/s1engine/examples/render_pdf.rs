@@ -1,17 +1,17 @@
-//! Render a DOCX fixture to PDF for fidelity inspection.
+//! Render a DOCX or ODT fixture to PDF for manual fidelity inspection.
 //!
-//! Usage: cargo run -p s1engine --features pdf --example render_pdf -- <input.docx> <output.pdf>
+//! Usage:
+//!   cargo run -p s1engine --features pdf --example render_pdf -- <input> <output.pdf>
 
+use s1engine::{Engine, Format};
 use std::env;
 use std::fs;
 use std::process::ExitCode;
 
-use s1engine::{Engine, Format};
-
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: render_pdf <input.docx> <output.pdf>");
+        eprintln!("usage: render_pdf <input.{{docx,odt}}> <output.pdf>");
         return ExitCode::from(64);
     }
     let input = &args[1];
@@ -26,7 +26,12 @@ fn main() -> ExitCode {
     };
 
     let engine = Engine::new();
-    let doc = match engine.open_as(&bytes, Format::Docx) {
+    let format = if input.ends_with(".odt") {
+        Format::Odt
+    } else {
+        Format::Docx
+    };
+    let doc = match engine.open_as(&bytes, format) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("parse {input}: {e}");
@@ -44,7 +49,7 @@ fn main() -> ExitCode {
         }
     };
 
-    eprintln!("PDF size: {} bytes", pdf.len());
+    eprintln!("PDF size: {} bytes ({} KB)", pdf.len(), pdf.len() / 1024);
 
     if let Err(e) = fs::write(output, &pdf) {
         eprintln!("write {output}: {e}");

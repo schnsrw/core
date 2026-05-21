@@ -866,7 +866,15 @@ impl Document {
             Format::Md => Ok(s1_format_md::write_bytes(&self.model)),
             #[cfg(feature = "pdf")]
             Format::Pdf => {
-                let font_db = s1_text::FontDatabase::empty();
+                // Convenience path: use a font DB that actually has fonts.
+                // `FontDatabase::new()` loads system fonts on non-WASM
+                // targets and the embedded Noto Sans fallback on WASM,
+                // so text/headers/footers actually render instead of
+                // shaping into empty glyph runs (the "empty colored
+                // tables" symptom the previous `FontDatabase::empty()`
+                // produced). Advanced callers can still hand in a
+                // custom DB via the public `export_pdf(&font_db)` API.
+                let font_db = s1_text::FontDatabase::new();
                 self.export_pdf(&font_db)
             }
             #[cfg(feature = "convert")]

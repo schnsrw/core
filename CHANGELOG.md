@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **DOCX → PDF: text and headers now actually render.**
+  `Document::export(Format::Pdf)` was constructing the layout pipeline
+  with `FontDatabase::empty()`, so the text-shaping stage produced
+  zero glyphs and the resulting PDF was "empty colored tables, no
+  text, no images, no headers" (user-reported on 2026-05-22). The
+  fix uses `FontDatabase::new()`, which loads system fonts on
+  non-WASM and falls back to embedded Noto Sans on WASM. Advanced
+  callers can still hand in a custom DB via the public
+  `Document::export_pdf(&font_db)` API. The `render_pdf` example was
+  extended to support both DOCX and ODT inputs so the manual
+  inspection loop works for either format. Visual-fidelity audit and
+  the `pdf_coverage` regression test are still pending and tracked
+  on the roadmap.
+
 ### Added
 
 - **Per-construct fidelity scorecard**

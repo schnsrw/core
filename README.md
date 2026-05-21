@@ -72,11 +72,19 @@ for the live scorecard.
 
 ### Known gaps (truthful state)
 
-- **DOCX → PDF visual fidelity is poor.** User-reported on 2026-05-22:
-  the rendered PDF only matches the source at ~2 / 100. The layout +
-  PDF pipeline lives at `crates/s1-layout/` and `crates/s1-format-pdf/`,
-  but there's currently no visual-fidelity test gating it. Tracked on
-  the [roadmap](docs/roadmap.md) as an immediate task.
+- **DOCX → PDF visual fidelity needs work.** User-reported on
+  2026-05-22 that the rendered PDF only matched the source at ~2 / 100
+  — "empty colored tables, no text, no images, no headers". Traced to
+  `Document::export(Format::Pdf)` constructing the layout with an
+  empty `FontDatabase`, so text shaping produced no glyphs at all.
+  Fixed by defaulting to `FontDatabase::new()` (loads system fonts on
+  non-WASM, falls back to embedded Noto Sans on WASM). Manual rendering
+  of `complex-styles.docx` now emits 13 PDF text operators and embeds 2
+  font files; deeper visual-fidelity gaps (drawings, headers, images,
+  floating layout) are still tracked as the next chunk of this task.
+  The layout + PDF pipeline lives at `crates/s1-layout/` and
+  `crates/s1-format-pdf/`; a visual-fidelity test (`pdf_coverage`) is
+  still pending so we can gate the rest of the work.
 - **ODT round-trip fidelity is at parity with DOCX.** No-edits,
   non-body-on-edits, and body-on-edits all at **4 / 4** zero-drop
   (`crates/s1engine/tests/odt_coverage.rs` +
