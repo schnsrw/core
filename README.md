@@ -39,6 +39,19 @@ save path. See [`docs/integration-plan.md`](docs/integration-plan.md)
 for the migration plan and [`docs/docx-coverage.md`](docs/docx-coverage.md)
 for the live scorecard.
 
+### Known gaps (truthful state)
+
+- **DOCX → PDF visual fidelity is poor.** User-reported on 2026-05-22:
+  the rendered PDF only matches the source at ~2 / 100. The layout +
+  PDF pipeline lives at `crates/s1-layout/` and `crates/s1-format-pdf/`,
+  but there's currently no visual-fidelity test gating it. Tracked on
+  the [roadmap](docs/roadmap.md) as an immediate task.
+- **ODT round-trip fidelity is unfinished.** Baseline measured by
+  `crates/s1engine/tests/odt_coverage.rs`: **0 / 4** zero-drop with
+  20 unique dropped tag classes on the existing fixture set. The
+  Phase 2 / 2a / 2b playbook that closed DOCX is the next milestone
+  for ODT.
+
 ## Quick start — JavaScript
 
 ```bash

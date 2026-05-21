@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ODT coverage scorecard** (`crates/s1engine/tests/odt_coverage.rs`)
+  — mirror of `docx_coverage`. Establishes the v0.2.x ODT preservation
+  baseline: **0 / 4** zero-drop with 20 unique dropped tag classes
+  across the existing `testdocs/odt/` fixtures (`draw:frame`,
+  `style:*-properties` cascade, `text:span`, `office:font-face-decls`,
+  …). Bytes in vs out is dramatic — a 1 MB freetestdata fixture writes
+  back at ~4 KB because the current writer regenerates from
+  `DocumentModel` and throws away everything outside it. The follow-on
+  work is an `s1-odf` preservation crate (analog of `s1-ooxml`).
+- `testdocs/odt/realworld/owncloud-example.odt` — first non-synthetic
+  ODT fixture, sourced from `owncloud/example-files`.
+- **`render_pdf` example** (`crates/s1engine/examples/render_pdf.rs`)
+  for manually inspecting `Document::export(Pdf)` output. Used during
+  the diagnosis of the user-reported PDF fidelity gap.
+
+### Known issues (tracked, not yet fixed)
+
+- **DOCX → PDF visual fidelity ~2 / 100** (user-reported 2026-05-22).
+  The layout + PDF pipeline (`crates/s1-layout/`,
+  `crates/s1-format-pdf/`) does not currently produce a faithful
+  rendering of real-world DOCX inputs. No visual-fidelity test gates
+  this path — the existing `docx_coverage` / `docx_edit_coverage`
+  contracts only check DOCX → DOCX. Pipelined on
+  `docs/roadmap.md`.
+
 ## [0.1.0] — 2026-05-21
 
 ### Added
