@@ -1,0 +1,23 @@
+[package]
+name = "s1-odf"
+description = "ODF packaging + lossless XML preservation layer for Casual Core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+quick-xml = { workspace = true }
+zip = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+zip = { workspace = true }
+
+[lints]
+workspace = true

@@ -1439,6 +1439,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "s1-odf"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "quick-xml",
+ "thiserror",
+ "zip",
+]
+
+[[package]]
 name = "s1-ooxml"
 version = "0.1.0"
 dependencies = [

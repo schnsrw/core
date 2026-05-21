@@ -51,10 +51,21 @@ The big rock. Detailed plan in
       element. `docx_edit_coverage` body-zero-drop went 10/39 → 39/39;
       all 162 previously-dropped unknown body tags (`a:*`, `mc:*`,
       `wps:*`, `w14:*`) survive edits now.
-- [ ] ODT — same playbook against an ODT fixture set. Baseline established
-      via `odt_coverage`: 0 / 4 zero-drop, 20 unique dropped tag classes.
-      Next: build `s1-odf` preservation crate (analog of `s1-ooxml`),
-      then Phase 2 → 2a → 2b for ODT.
+- [ ] ODT — same playbook against an ODT fixture set. Progress:
+  - [x] **Coverage scorecard** (`odt_coverage`): baseline 0 / 4
+        zero-drop with 20 unique dropped tag classes on the existing
+        `testdocs/odt/` fixtures.
+  - [x] **`s1-odf` preservation crate** (`crates/s1-odf/`) — analog
+        of `s1-ooxml`. Honours ODF specifics (mimetype-first STORED,
+        `META-INF/manifest.xml`, lenient parse for empty `.xml`
+        parts). Passthrough audit: **4 / 4 zero-drop** on the
+        existing fixture set.
+  - [ ] Phase 2 wire-up — `Engine::open(Odt)` keeps the package
+        alongside `DocumentModel`; `export(Odt)` re-emits verbatim
+        when not dirty.
+  - [ ] Phase 2a — non-body parts ride through edits (splice
+        regenerated `content.xml` only).
+  - [ ] Phase 2b — per-NodeId body splice (BodyOrigin for ODT).
 - [ ] **DOCX → PDF visual fidelity** — user-reported ~2/100 fidelity
       on the rendered PDF (2026-05-22). Path: `s1-format-docx::read` →
       `DocumentModel` → `s1-layout::layout` → `s1-format-pdf::write_pdf`.

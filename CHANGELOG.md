@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`s1-odf` preservation crate** (`crates/s1-odf/`) — counterpart of
+  `s1-ooxml` for the OpenDocument format. Parses any `.odt` / `.ods` /
+  `.odp` package into a lossless tree and writes it back. Honours ODF
+  specifics: `mimetype` written first as STORED (uncompressed),
+  `META-INF/manifest.xml` parsed into a typed [`Manifest`], lenient
+  fallback to `Binary` for empty `.xml` parts (e.g.
+  `Configurations2/accelerator/current.xml`). Passthrough audit:
+  **4 / 4 zero-drop** on the existing `testdocs/odt/` fixture set.
+  Zero `s1-model` dependencies — same architectural rule as
+  `s1-ooxml`.
 - **ODT coverage scorecard** (`crates/s1engine/tests/odt_coverage.rs`)
   — mirror of `docx_coverage`. Establishes the v0.2.x ODT preservation
   baseline: **0 / 4** zero-drop with 20 unique dropped tag classes

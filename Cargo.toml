@@ -12,6 +12,7 @@ members = [
     "crates/s1-layout",
     "crates/s1-text",
     "crates/s1-ooxml",
+    "crates/s1-odf",
     "crates/s1engine",
     "ffi/wasm",
     "ffi/c",
@@ -39,6 +40,7 @@ s1-convert = { version = "0.1.0", path = "crates/s1-convert" }
 s1-layout = { version = "0.1.0", path = "crates/s1-layout" }
 s1-text = { version = "0.1.0", path = "crates/s1-text" }
 s1-ooxml = { version = "0.1.0", path = "crates/s1-ooxml" }
+s1-odf = { version = "0.1.0", path = "crates/s1-odf" }
 s1engine = { version = "0.1.0", path = "crates/s1engine" }
 
 thiserror = "2"
