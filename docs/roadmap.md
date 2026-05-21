@@ -51,7 +51,18 @@ The big rock. Detailed plan in
       element. `docx_edit_coverage` body-zero-drop went 10/39 → 39/39;
       all 162 previously-dropped unknown body tags (`a:*`, `mc:*`,
       `wps:*`, `w14:*`) survive edits now.
-- [ ] ODT — same playbook against an ODT fixture set.
+- [ ] ODT — same playbook against an ODT fixture set. Baseline established
+      via `odt_coverage`: 0 / 4 zero-drop, 20 unique dropped tag classes.
+      Next: build `s1-odf` preservation crate (analog of `s1-ooxml`),
+      then Phase 2 → 2a → 2b for ODT.
+- [ ] **DOCX → PDF visual fidelity** — user-reported ~2/100 fidelity
+      on the rendered PDF (2026-05-22). Path: `s1-format-docx::read` →
+      `DocumentModel` → `s1-layout::layout` → `s1-format-pdf::write_pdf`.
+      Currently no visual-fidelity test gates this — `docx_coverage` /
+      `docx_edit_coverage` only measure DOCX ↔ DOCX. Plan: ship a
+      `pdf_coverage` test that compares rendered PDF text/structure
+      against the source DOCX, identify the largest-impact gaps
+      (fonts? images? tables? page geometry?), then close them.
 
 ## Then — `v0.3.x` — performance + hostile input
 
