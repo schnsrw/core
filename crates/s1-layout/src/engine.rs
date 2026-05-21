@@ -1510,8 +1510,9 @@ impl<'a> LayoutEngine<'a> {
                     // Inline images/drawings within a paragraph
                     NodeType::Drawing | NodeType::Image => {
                         let img_node = child;
+
                         // Try ImageWidth first, fall back to ShapeWidth for VML drawings
-                        let img_w = img_node
+                        let explicit_w = img_node
                             .attributes
                             .get(&AttributeKey::ImageWidth)
                             .and_then(|v| {
@@ -1532,10 +1533,9 @@ impl<'a> LayoutEngine<'a> {
                                             None
                                         }
                                     })
-                            })
-                            .unwrap_or(100.0);
+                            });
                         // Try ImageHeight first, fall back to ShapeHeight for VML drawings
-                        let img_h = img_node
+                        let explicit_h = img_node
                             .attributes
                             .get(&AttributeKey::ImageHeight)
                             .and_then(|v| {
@@ -1556,8 +1556,30 @@ impl<'a> LayoutEngine<'a> {
                                             None
                                         }
                                     })
-                            })
-                            .unwrap_or(100.0);
+                            });
+
+                        // Get media ID
+                        let media_id_val = img_node
+                            .attributes
+                            .get(&AttributeKey::ImageMediaId)
+                            .and_then(|v| {
+                                if let AttributeValue::MediaId(mid) = v {
+                                    Some(mid.0)
+                                } else {
+                                    None
+                                }
+                            });
+
+                        // Skip Drawing nodes that have neither a media reference
+                        // nor explicit dimensions — they are empty anchor elements
+                        // that would otherwise inject a phantom 100×100 pt run and
+                        // inflate the line height of the containing paragraph.
+                        if media_id_val.is_none() && explicit_w.is_none() && explicit_h.is_none() {
+                            continue;
+                        }
+
+                        let img_w = explicit_w.unwrap_or(100.0);
+                        let img_h = explicit_h.unwrap_or(100.0);
 
                         // Constrain to available area (width and height)
                         let scale_w = if img_w > available_width {
@@ -1574,17 +1596,6 @@ impl<'a> LayoutEngine<'a> {
                         let final_w = img_w * scale;
                         let final_h = img_h * scale;
 
-                        // Get media ID and image data
-                        let media_id_val = img_node
-                            .attributes
-                            .get(&AttributeKey::ImageMediaId)
-                            .and_then(|v| {
-                                if let AttributeValue::MediaId(mid) = v {
-                                    Some(mid.0)
-                                } else {
-                                    None
-                                }
-                            });
                         let media_id_str = media_id_val
                             .map(|id| format!("{id}"))
                             .or_else(|| {
@@ -3315,25 +3326,46 @@ impl<'a> LayoutEngine<'a> {
             }
         };
 
-        // Layout child paragraphs at a preliminary Y of 0 to measure total height
+        // Layout child blocks at a preliminary Y of 0 to measure total height.
+        // Headers / footers commonly contain Tables (logos, branding bars,
+        // two-column "Name | Date" layouts). Walking only Paragraph children
+        // dropped those tables — and any images inside their cells — from
+        // the layout entirely. Process both Paragraph and Table children
+        // here; the merge logic below preserves the Table block when the
+        // header is table-driven.
         let mut blocks = Vec::new();
         let mut current_y = 0.0;
 
         for &child_id in &node.children {
-            if let Some(child) = self.doc.node(child_id) {
-                if child.node_type == NodeType::Paragraph {
+            let child = match self.doc.node(child_id) {
+                Some(n) => n,
+                None => continue,
+            };
+            match child.node_type {
+                NodeType::Paragraph => {
                     let para_style = resolve_paragraph_style(self.doc, child_id);
-                    // Use preliminary rect at y=0 for measurement
                     let content_rect = Rect::new(hf_x, 0.0, hf_width, 100.0);
                     let mut block =
                         self.layout_paragraph(child_id, &para_style, content_rect, current_y)?;
-
-                    // Substitute field values in glyph runs
                     self.substitute_fields_in_block(&mut block, page_num, total_pages);
-
                     current_y += block.bounds.height;
                     blocks.push(block);
                 }
+                NodeType::Table => {
+                    let content_rect = Rect::new(hf_x, 0.0, hf_width, 100_000.0);
+                    let rows = self.layout_table_rows(child_id, content_rect)?;
+                    let height: f64 = rows.iter().map(|r| r.bounds.height).sum();
+                    blocks.push(LayoutBlock {
+                        source_id: child_id,
+                        bounds: Rect::new(hf_x, current_y, hf_width, height),
+                        kind: LayoutBlockKind::Table {
+                            rows,
+                            is_continuation: false,
+                        },
+                    });
+                    current_y += height;
+                }
+                _ => {}
             }
         }
 
@@ -3350,13 +3382,30 @@ impl<'a> LayoutEngine<'a> {
             block.bounds.y += hf_y;
         }
 
-        // Merge blocks into a single block (typical: one paragraph)
+        // Merge blocks into a single block. Headers/footers expose a
+        // single `Option<LayoutBlock>` slot on `LayoutPage`, so we have
+        // to collapse. Preference order:
+        // 1. If there's exactly one block, return it (Paragraph OR Table).
+        // 2. If there's any Table block, return the first one — that's
+        //    where header logos / branding tables usually live and the
+        //    surrounding empty paragraphs aren't worth keeping.
+        // 3. Otherwise, merge all paragraphs' lines into one wrapper.
         if blocks.len() == 1 {
             let mut block = blocks.remove(0);
-            block.source_id = node_id; // Use header/footer node ID
+            block.source_id = node_id;
             block.bounds.x = hf_x;
-            Ok(block)
-        } else {
+            return Ok(block);
+        }
+        if let Some(table_idx) = blocks
+            .iter()
+            .position(|b| matches!(b.kind, LayoutBlockKind::Table { .. }))
+        {
+            let mut block = blocks.remove(table_idx);
+            block.source_id = node_id;
+            block.bounds.x = hf_x;
+            return Ok(block);
+        }
+        {
             // Multiple paragraphs — wrap as first paragraph
             let lines = blocks
                 .into_iter()
