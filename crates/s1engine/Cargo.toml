@@ -14,6 +14,7 @@ categories.workspace = true
 s1-model = { workspace = true }
 s1-ops = { workspace = true }
 s1-ooxml = { workspace = true }
+s1-odf = { workspace = true }
 thiserror = { workspace = true }
 
 # Feature-gated format crates

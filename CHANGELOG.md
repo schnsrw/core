@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **ODT Phase 2** — `Engine::open(Odt)` now keeps the parsed
+  `s1_odf::Package` alongside `DocumentModel` via
+  `s1_format_odt::read_with_package`, and `Document::export(Odt)`
+  re-emits the package verbatim when `model_dirty == false`. New
+  constructor `Document::from_model_with_odf_package(model, pkg)`.
+  Effect on the coverage scorecard: **`odt_coverage` zero-drop
+  4 / 4** (was 0 / 4), contract now asserted in the test.
 - **`s1-odf` preservation crate** (`crates/s1-odf/`) — counterpart of
   `s1-ooxml` for the OpenDocument format. Parses any `.odt` / `.ods` /
   `.odp` package into a lossless tree and writes it back. Honours ODF

@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 s1-model = { workspace = true }
+s1-odf = { workspace = true }
 quick-xml = { workspace = true }
 zip = { workspace = true }
 thiserror = { workspace = true }

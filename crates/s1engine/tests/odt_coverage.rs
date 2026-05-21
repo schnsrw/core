@@ -6,11 +6,10 @@
 //! baseline scorecard for the v0.2.x ODT preservation milestone — same
 //! playbook that drove DOCX from 10/39 to 39/39 zero-drop.
 //!
-//! This test is a *reporter*. It prints the scorecard and writes
-//! `target/odt-coverage.json`. It does not fail on dropped tags yet —
-//! the preservation layer (`s1-odf`, mirror of `s1-ooxml`) is the
-//! follow-up work that will close any drops. Once it lands, this test
-//! will ratchet to assert zero drop.
+//! This test is a *reporter* that also asserts the contract: every
+//! fixture must round-trip with zero tag drop. The preservation layer
+//! (`s1-odf`) is wired through `Engine::open(Odt)` / `Document::export(Odt)`
+//! to make that hold.
 //!
 //! Run: `cargo test --package s1engine --test odt_coverage -- --nocapture`
 
@@ -246,4 +245,15 @@ fn odt_coverage_audit() {
         let _ = fs::create_dir_all(parent);
     }
     let _ = fs::write(&path, json);
+
+    // ODT Phase 2 contract: every fixture must round-trip with zero tag
+    // drop on the no-edits path. Falling back to wholesale regeneration
+    // (the pre-preservation behaviour) regresses this.
+    assert_eq!(
+        zero_drop,
+        total,
+        "{} of {} fixtures dropped tags on round-trip — ODT preservation broken",
+        total - zero_drop,
+        total
+    );
 }

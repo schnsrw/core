@@ -20,6 +20,29 @@ use crate::xml_util::mime_for_extension;
 /// Returns `OdtError` if the archive is invalid, required files are missing,
 /// or XML content cannot be parsed.
 pub fn read(data: &[u8]) -> Result<DocumentModel, OdtError> {
+    let (model, _) = read_with_package(data)?;
+    Ok(model)
+}
+
+/// Read an ODT and **also** return the full preservation package.
+///
+/// The returned [`s1_odf::Package`] holds every part of the source file —
+/// XML and binary — in a lossless tree. Consumers that need
+/// round-trip-without-edits fidelity (the converter use case) keep this
+/// `Package` and re-emit it via [`s1_odf::Package::write`] instead of
+/// regenerating bytes from the projected [`DocumentModel`].
+///
+/// Both passes (model + package) run from the same input bytes. Today they
+/// parse independently; future work will refactor the model projection on
+/// top of the package to make this single-pass.
+pub fn read_with_package(data: &[u8]) -> Result<(DocumentModel, s1_odf::Package), OdtError> {
+    let model = read_model_internal(data)?;
+    let package = s1_odf::Package::parse(data)
+        .map_err(|e| OdtError::InvalidStructure(format!("odf package: {e}")))?;
+    Ok((model, package))
+}
+
+fn read_model_internal(data: &[u8]) -> Result<DocumentModel, OdtError> {
     let cursor = Cursor::new(data);
     let mut archive = ZipArchive::new(cursor)?;
     let mut doc = DocumentModel::new();

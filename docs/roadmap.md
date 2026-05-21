@@ -60,9 +60,12 @@ The big rock. Detailed plan in
         `META-INF/manifest.xml`, lenient parse for empty `.xml`
         parts). Passthrough audit: **4 / 4 zero-drop** on the
         existing fixture set.
-  - [ ] Phase 2 wire-up — `Engine::open(Odt)` keeps the package
-        alongside `DocumentModel`; `export(Odt)` re-emits verbatim
-        when not dirty.
+  - [x] **Phase 2 wire-up** — `Engine::open(Odt)` keeps the
+        `s1_odf::Package` alongside `DocumentModel`; `export(Odt)`
+        re-emits verbatim when `model_dirty == false`. `odt_coverage`
+        body-zero-drop jumped 0 / 4 → **4 / 4**; bytes_in ≈ bytes_out
+        (1 MB freetestdata fixture now writes back at ~1 MB instead
+        of ~4 KB). Contract is asserted, not just reported.
   - [ ] Phase 2a — non-body parts ride through edits (splice
         regenerated `content.xml` only).
   - [ ] Phase 2b — per-NodeId body splice (BodyOrigin for ODT).

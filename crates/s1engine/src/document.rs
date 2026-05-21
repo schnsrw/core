@@ -35,6 +35,11 @@ pub struct Document {
     /// entirely — once a caller bypasses the operation system, we can't
     /// reason about which parts of the model agree with the package.
     preservation: Option<s1_ooxml::Package>,
+    /// ODF preservation — counterpart of `preservation` for OpenDocument
+    /// inputs. Populated by `Engine::open(Format::Odt)`. While this is
+    /// `Some` *and* `model_dirty == false`, `export(Odt)` re-emits the
+    /// package verbatim — zero-drop round-trip for the converter case.
+    odf_preservation: Option<s1_odf::Package>,
     /// Per-body-child origin table — maps each top-level body NodeId to
     /// its preserved `XmlElement`. Built at open time alongside
     /// `preservation`. Drives the Phase 2b per-node splice in
@@ -63,6 +68,7 @@ impl Document {
             model: DocumentModel::new(),
             history: History::new(),
             preservation: None,
+            odf_preservation: None,
             body_origin: None,
             dirty_body_ids: HashSet::new(),
             model_dirty: false,
@@ -76,6 +82,7 @@ impl Document {
             model,
             history: History::new(),
             preservation: None,
+            odf_preservation: None,
             body_origin: None,
             dirty_body_ids: HashSet::new(),
             model_dirty: false,
@@ -94,6 +101,27 @@ impl Document {
             model,
             history: History::new(),
             preservation: Some(package),
+            odf_preservation: None,
+            body_origin: None,
+            dirty_body_ids: HashSet::new(),
+            model_dirty: false,
+            body_structural_dirty: false,
+        }
+    }
+
+    /// Create a Document from a model **plus** the lossless ODF package it
+    /// came from. Counterpart of [`from_model_with_package`] for ODT
+    /// inputs. After this call, `is_dirty() == false`; the next
+    /// `export(Odt)` is a verbatim re-emission of the package. Edit-class
+    /// mutations flip the dirty flag and `export(Odt)` falls back to
+    /// regenerating from the model (Phase 2a / 2b for ODT will refine
+    /// that lane further).
+    pub fn from_model_with_odf_package(model: DocumentModel, package: s1_odf::Package) -> Self {
+        Self {
+            model,
+            history: History::new(),
+            preservation: None,
+            odf_preservation: Some(package),
             body_origin: None,
             dirty_body_ids: HashSet::new(),
             model_dirty: false,
@@ -116,6 +144,7 @@ impl Document {
             model,
             history: History::new(),
             preservation: Some(package),
+            odf_preservation: None,
             body_origin: Some(body_origin),
             dirty_body_ids: HashSet::new(),
             model_dirty: false,
@@ -140,6 +169,7 @@ impl Document {
     /// original."
     pub fn invalidate_preservation(&mut self) {
         self.preservation = None;
+        self.odf_preservation = None;
         self.body_origin = None;
         self.model_dirty = true;
         self.body_structural_dirty = true;
@@ -175,6 +205,7 @@ impl Document {
     /// (e.g., bulk import, format reader integration, or testing).
     pub fn model_mut(&mut self) -> &mut DocumentModel {
         self.preservation = None;
+        self.odf_preservation = None;
         self.body_origin = None;
         self.body_structural_dirty = true;
         &mut self.model
@@ -195,6 +226,7 @@ impl Document {
     /// Get mutable document metadata.
     pub fn metadata_mut(&mut self) -> &mut DocumentMetadata {
         self.preservation = None;
+        self.odf_preservation = None;
         self.body_origin = None;
         self.body_structural_dirty = true;
         self.model.metadata_mut()
@@ -764,7 +796,19 @@ impl Document {
                 Ok(s1_format_docx::write(&self.model)?)
             }
             #[cfg(feature = "odt")]
-            Format::Odt => Ok(s1_format_odt::write(&self.model)?),
+            Format::Odt => {
+                // No edits + ODF preservation → re-emit verbatim (ODT Phase 2).
+                if let Some(pkg) = &self.odf_preservation {
+                    if !self.model_dirty {
+                        return Ok(pkg
+                            .write()
+                            .map_err(|e| Error::Format(format!("odf package write: {e}")))?);
+                    }
+                    // Phase 2a / 2b for ODT still pending — fall back to
+                    // regenerating from the model on edit.
+                }
+                Ok(s1_format_odt::write(&self.model)?)
+            }
             #[cfg(feature = "txt")]
             Format::Txt => Ok(s1_format_txt::write(&self.model)),
             #[cfg(feature = "md")]

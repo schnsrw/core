@@ -22,5 +22,5 @@ pub mod reader;
 pub mod writer;
 
 pub use error::OdtError;
-pub use reader::read;
+pub use reader::{read, read_with_package};
 pub use writer::write;

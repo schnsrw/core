@@ -1386,6 +1386,7 @@ dependencies = [
  "pretty_assertions",
  "quick-xml",
  "s1-model",
+ "s1-odf",
  "thiserror",
  "zip",
 ]
@@ -1499,6 +1500,7 @@ dependencies = [
  "s1-format-txt",
  "s1-layout",
  "s1-model",
+ "s1-odf",
  "s1-ooxml",
  "s1-ops",
  "s1-text",

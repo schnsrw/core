@@ -51,6 +51,14 @@ impl Engine {
             return Ok(Document::from_open_state(model, pkg, origin));
         }
 
+        // ODT mirrors the DOCX preservation entry — `export(Odt)`
+        // re-emits the package verbatim when not dirty (ODT Phase 2).
+        #[cfg(feature = "odt")]
+        if matches!(format, Format::Odt) {
+            let (model, pkg) = s1_format_odt::read_with_package(data)?;
+            return Ok(Document::from_model_with_odf_package(model, pkg));
+        }
+
         let model = match format {
             #[cfg(feature = "docx")]
             Format::Docx => s1_format_docx::read(data)?,
