@@ -13,6 +13,7 @@ s1-format-docx = { path = "../crates/s1-format-docx" }
 s1-format-odt = { path = "../crates/s1-format-odt" }
 s1-format-txt = { path = "../crates/s1-format-txt" }
 s1-convert = { path = "../crates/s1-convert" }
+s1-ooxml = { path = "../crates/s1-ooxml" }
 s1engine = { path = "../crates/s1engine", features = ["docx", "odt", "txt"] }
 
 # Prevent this from interfering with workspace
@@ -52,5 +53,17 @@ doc = false
 [[bin]]
 name = "fuzz_format_roundtrip"
 path = "fuzz_targets/fuzz_format_roundtrip.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ooxml_package"
+path = "fuzz_targets/fuzz_ooxml_package.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_docx_phase2b"
+path = "fuzz_targets/fuzz_docx_phase2b.rs"
 test = false
 doc = false

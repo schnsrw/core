@@ -1,7 +1,14 @@
 # Rust
 /target
+fuzz/target
+fuzz/corpus
+fuzz/artifacts
+fuzz/coverage
 Cargo.lock.bak
 **/*.rs.bk
+
+# Claude Code workspace state
+.claude/
 
 # Node / Bun
 node_modules/

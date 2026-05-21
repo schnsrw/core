@@ -142,9 +142,64 @@ the slower hardware.
 
 Existing tests (`crates/s1engine/tests/hostile_inputs.rs`) cover this.
 Continues to grow with each parser bug we find. Fuzz harnesses in
-`fuzz/` complement it.
+`fuzz/` complement it (see §8).
 
 **Status:** ongoing.
+
+---
+
+### 8. Fuzz harnesses (`fuzz/`)
+
+`cargo-fuzz` (libFuzzer) targets covering the parse + edit + export
+surfaces. Each target wraps a no-panic contract: malformed input must
+return a typed error, never trip an `unwrap` / `expect` / arithmetic
+overflow.
+
+| Target | Surface |
+| --- | --- |
+| `fuzz_docx_reader` | `s1_format_docx::read(&[u8])` |
+| `fuzz_odt_reader` | `s1_format_odt::read(&[u8])` |
+| `fuzz_txt_reader` | TXT reader |
+| `fuzz_doc_reader` | legacy `.doc` reader |
+| `fuzz_engine_open` | `Engine::open(&[u8])` (format auto-detect) |
+| `fuzz_format_roundtrip` | open + export to every format |
+| `fuzz_ooxml_package` | `s1_ooxml::Package::parse` + `write` (Phase 2 preservation tier) |
+| `fuzz_docx_phase2b` | `Engine::open` + `update_toc` + `export(Docx)` — exercises the Phase 2b origin table + per-NodeId splice |
+
+```bash
+# Requires nightly + cargo-fuzz installed: `cargo install cargo-fuzz`
+cd fuzz
+cargo +nightly fuzz run fuzz_ooxml_package
+cargo +nightly fuzz run fuzz_docx_phase2b
+```
+
+The `v0.3.x` roadmap wires these into a nightly CI schedule.
+
+---
+
+### 9. Benchmarks (`crates/s1engine/benches/`)
+
+`criterion`-driven micro and macro benches. Sampling is honest (real
+disk + real layout + real PDF emission for the heavy targets), so
+runtimes are reportable.
+
+```bash
+# Default bench set (no PDF, no large workload)
+cargo bench -p s1engine
+
+# Roadmap `v0.3.x` published number — 500-page DOCX → PDF
+cargo bench -p s1engine --features pdf -- pdf_500_pages
+```
+
+The `pdf_500_pages` group builds a ~2,500-section / ~500-page document
+in-memory and runs the full DOCX → layout → PDF pipeline. Sample size
+is intentionally tightened (10) because each iteration is
+sub-second-to-multi-second.
+
+Reference number (Apple Silicon, M-class CPU, 2026-05-22):
+**~244 ms median** for one DOCX → PDF pass over ~500 pages
+(range 221–274 ms across 10 samples). Use this as the regression
+floor — anything ≥ 2× is a perf regression worth investigating.
 
 ---
 
@@ -160,6 +215,10 @@ cargo test --package s1engine --test lossy_tags
 cargo test --package s1engine --test conversion_matrix
 cargo test --package s1engine --test eigenpal_parity
 cargo test --package s1engine --test perf_smoke
+
+# Fuzz + bench
+cd fuzz && cargo +nightly fuzz run fuzz_docx_phase2b
+cargo bench -p s1engine --features pdf
 
 # Generate the integration scorecard
 ./scripts/fidelity-audit.sh

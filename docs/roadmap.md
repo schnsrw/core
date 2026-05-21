@@ -58,8 +58,14 @@ The big rock. Detailed plan in
 - [ ] Stream the DOCX reader (don't hold the full XML in memory). The
       current `s1-format-docx` parser is in-memory; streaming is a known
       target. See `crates/s1-format-docx/src/streaming.rs`.
-- [ ] Add `cargo-fuzz` harnesses under CI on a nightly schedule.
-- [ ] Benchmark a 500-page DOCX → PDF conversion and publish a number.
+- [x] `cargo-fuzz` harnesses for the parse + edit + export surfaces.
+      Eight targets including `fuzz_ooxml_package` (Phase 2 preservation
+      tier) and `fuzz_docx_phase2b` (Phase 2b origin table + per-NodeId
+      splice). Nightly CI schedule still pending.
+- [x] 500-page DOCX → PDF benchmark — `pdf_500_pages` bench group,
+      runs the full layout + shaping + PDF pipeline. Reference number
+      ~244 ms median on Apple Silicon (range 221–274 ms across
+      10 samples). See [`docs/testing-strategy.md`](testing-strategy.md).
 - [ ] Cap memory at ≤ 4× input size during conversion.
 
 ## Later — `v1.0` — API freeze

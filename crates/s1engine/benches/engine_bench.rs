@@ -51,6 +51,28 @@ fn build_large_doc() -> s1engine::Document {
     builder.build()
 }
 
+/// Roughly 500 pages of body content (2500 sections × heading + paragraph
+/// of ~400 chars). The roadmap's `v0.3.x` perf target benches DOCX → PDF
+/// against this scale; bumping the section count keeps the layout +
+/// shaping pipeline under realistic stress without inflating individual
+/// paragraph weight.
+#[cfg(feature = "pdf")]
+fn build_huge_doc() -> s1engine::Document {
+    let mut builder = DocumentBuilder::new().title("Huge Document (~500 pages)");
+    for i in 0..2500 {
+        builder = builder
+            .heading(2, &format!("Section {}", i + 1))
+            .text(&format!(
+                "Paragraph {} of the 500-page benchmark document. \
+                 Lorem ipsum dolor sit amet, consectetur adipiscing elit, \
+                 sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. \
+                 Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.",
+                i + 1
+            ));
+    }
+    builder.build()
+}
+
 fn build_table_doc() -> s1engine::Document {
     DocumentBuilder::new()
         .heading(1, "Report")
@@ -305,6 +327,26 @@ fn bench_open_docx_large(c: &mut Criterion) {
     });
 }
 
+/// DOCX → PDF conversion at roadmap-scale (~500 pages of body content).
+/// This is the `v0.3.x` published-number bench. Sample size is tightened
+/// because each iteration runs the full layout + shaping + PDF pipeline.
+///
+/// Run: `cargo bench -p s1engine --features pdf -- pdf_500_pages`
+#[cfg(feature = "pdf")]
+fn bench_docx_to_pdf_huge(c: &mut Criterion) {
+    let doc = build_huge_doc();
+    let font_db = s1_text::FontDatabase::empty();
+    let mut group = c.benchmark_group("pdf_500_pages");
+    group.sample_size(10);
+    group.bench_function("docx_to_pdf_500_pages", |b| {
+        b.iter(|| {
+            let bytes = doc.export_pdf(&font_db).unwrap();
+            black_box(bytes);
+        });
+    });
+    group.finish();
+}
+
 #[cfg(feature = "odt")]
 fn bench_roundtrip_odt_small(c: &mut Criterion) {
     let doc = DocumentBuilder::new()
@@ -368,14 +410,29 @@ criterion_group!(
 #[cfg(feature = "odt")]
 criterion_group!(benches_odt, bench_roundtrip_odt_small,);
 
-#[cfg(all(feature = "docx", feature = "odt"))]
+#[cfg(feature = "pdf")]
+criterion_group!(benches_pdf, bench_docx_to_pdf_huge,);
+
+#[cfg(all(feature = "docx", feature = "odt", feature = "pdf"))]
+criterion_main!(benches, benches_docx_large, benches_odt, benches_pdf);
+
+#[cfg(all(feature = "docx", feature = "odt", not(feature = "pdf")))]
 criterion_main!(benches, benches_docx_large, benches_odt);
 
-#[cfg(all(feature = "docx", not(feature = "odt")))]
+#[cfg(all(feature = "docx", not(feature = "odt"), feature = "pdf"))]
+criterion_main!(benches, benches_docx_large, benches_pdf);
+
+#[cfg(all(feature = "docx", not(feature = "odt"), not(feature = "pdf")))]
 criterion_main!(benches, benches_docx_large);
 
-#[cfg(all(not(feature = "docx"), feature = "odt"))]
+#[cfg(all(not(feature = "docx"), feature = "odt", feature = "pdf"))]
+criterion_main!(benches, benches_odt, benches_pdf);
+
+#[cfg(all(not(feature = "docx"), feature = "odt", not(feature = "pdf")))]
 criterion_main!(benches, benches_odt);
 
-#[cfg(all(not(feature = "docx"), not(feature = "odt")))]
+#[cfg(all(not(feature = "docx"), not(feature = "odt"), feature = "pdf"))]
+criterion_main!(benches, benches_pdf);
+
+#[cfg(all(not(feature = "docx"), not(feature = "odt"), not(feature = "pdf")))]
 criterion_main!(benches);
