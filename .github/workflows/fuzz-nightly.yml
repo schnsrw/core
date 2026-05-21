@@ -1,0 +1,82 @@
+name: Fuzz — nightly
+
+# Nightly fuzz sweep covering every `fuzz/fuzz_targets/*.rs` target.
+# Each target runs for a fixed wall-clock budget — long enough to find
+# new corpus, short enough to leave room for the other targets and stay
+# inside the GitHub Actions free tier. A crash file under
+# `fuzz/artifacts/<target>/` fails the job and gets uploaded as an
+# artefact so the regression can be reproduced locally.
+
+on:
+  schedule:
+    # 03:17 UTC — off-peak; minute offset avoids the cron herd on :00.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Single target to run (blank = all)"
+        required: false
+        type: string
+      duration_secs:
+        description: "Per-target run duration in seconds"
+        required: false
+        default: "300"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz target sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_docx_reader
+          - fuzz_odt_reader
+          - fuzz_txt_reader
+          - fuzz_doc_reader
+          - fuzz_engine_open
+          - fuzz_format_roundtrip
+          - fuzz_ooxml_package
+          - fuzz_docx_phase2b
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip non-matching target on manual dispatch
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.target != '' && github.event.inputs.target != matrix.target
+        run: |
+          echo "Skipping ${{ matrix.target }} (manual dispatch targeted ${{ github.event.inputs.target }})."
+          exit 0
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+
+      - name: Install cargo-fuzz
+        run: cargo install --locked cargo-fuzz
+
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: fuzz
+        run: |
+          DURATION="${{ github.event.inputs.duration_secs || '300' }}"
+          echo "Running ${{ matrix.target }} for ${DURATION}s"
+          # `-max_total_time` stops after the budget; non-crash exit is 0.
+          cargo +nightly fuzz run "${{ matrix.target }}" -- -max_total_time="$DURATION"
+
+      - name: Upload artefacts on crash
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+            fuzz/corpus/${{ matrix.target }}/
+          retention-days: 30
+          if-no-files-found: ignore

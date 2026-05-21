@@ -61,7 +61,8 @@ The big rock. Detailed plan in
 - [x] `cargo-fuzz` harnesses for the parse + edit + export surfaces.
       Eight targets including `fuzz_ooxml_package` (Phase 2 preservation
       tier) and `fuzz_docx_phase2b` (Phase 2b origin table + per-NodeId
-      splice). Nightly CI schedule still pending.
+      splice). `.github/workflows/fuzz-nightly.yml` runs each target for
+      5 minutes at 03:17 UTC daily; crashes upload as artefacts.
 - [x] 500-page DOCX → PDF benchmark — `pdf_500_pages` bench group,
       runs the full layout + shaping + PDF pipeline. Reference number
       ~244 ms median on Apple Silicon (range 221–274 ms across
