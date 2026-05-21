@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-construct fidelity scorecard**
+  (`crates/s1engine/tests/fidelity_score.rs`). Walks every DOCX +
+  ODT fixture and reports, per construct family (Paragraphs, Runs,
+  Tables, DrawingML, VML / legacy drawings, ODF drawings, Text
+  boxes, Math, Vectors / SVG primitives, Lists, Footnotes /
+  endnotes, Comments, Hyperlinks, Bookmarks, Fields, Tracked
+  changes, TOCs, Header / footer references, Section / page
+  geometry, Soft formatting), the fraction of input instances that
+  survive the round-trip on the no-edit and with-edit lanes.
+  Reference numbers as of this commit:
+  - DOCX no-edit       100.00% (16 construct families, 22 277 instances)
+  - DOCX with-edit     100.00%
+  - ODT  no-edit       100.00% (7 construct families on the current
+    corpus — expand fixture set to exercise the others)
+  - ODT  with-edit     100.00%
+  Output is written to `target/fidelity-score.json` and rendered
+  to [`docs/fidelity-scorecard.md`](docs/fidelity-scorecard.md).
 - **ODT Phase 2b** — per-NodeId body splice. New
   `s1_format_odt::BodyOrigin` mirrors the DOCX one, mapping each
   top-level `<office:text>` child NodeId to its preserved
