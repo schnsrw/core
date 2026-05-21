@@ -72,19 +72,35 @@ for the live scorecard.
 
 ### Known gaps (truthful state)
 
-- **DOCX → PDF visual fidelity needs work.** User-reported on
-  2026-05-22 that the rendered PDF only matched the source at ~2 / 100
-  — "empty colored tables, no text, no images, no headers". Traced to
-  `Document::export(Format::Pdf)` constructing the layout with an
-  empty `FontDatabase`, so text shaping produced no glyphs at all.
-  Fixed by defaulting to `FontDatabase::new()` (loads system fonts on
-  non-WASM, falls back to embedded Noto Sans on WASM). Manual rendering
-  of `complex-styles.docx` now emits 13 PDF text operators and embeds 2
-  font files; deeper visual-fidelity gaps (drawings, headers, images,
-  floating layout) are still tracked as the next chunk of this task.
-  The layout + PDF pipeline lives at `crates/s1-layout/` and
-  `crates/s1-format-pdf/`; a visual-fidelity test (`pdf_coverage`) is
-  still pending so we can gate the rest of the work.
+- **DOCX → PDF visual fidelity — partially closed, work in flight.**
+  User-reported on 2026-05-22 that the rendered PDF only matched the
+  source at ~2 / 100 ("empty colored tables, no text, no images, no
+  headers"). Audited via the new `crates/s1engine/tests/pdf_coverage.rs`
+  scorecard ([docs/pdf-coverage.md](docs/pdf-coverage.md)). State as of
+  now:
+  - **Text** ✅ — 38/39 DOCX fixtures emit `Tj` operators (the one with
+    0 is `empty.docx`, no text in source). Was 0 — root cause was
+    `Document::export(Format::Pdf)` shipping an empty `FontDatabase`;
+    fixed by using `FontDatabase::new()`.
+  - **Images** ✅ partial — 10/16 image-bearing fixtures now emit
+    `Image` XObjects. Was 0. Root causes were (a) `collect_and_embed_images`
+    not recursing into `Paragraph` blocks where inline images live, and
+    (b) `render_line` having a stray `continue` that dropped inline
+    images. Both fixed. Format support: PNG, JPEG, JPG, WebP, BMP, GIF,
+    TIFF, ICO via the `image` crate; SVG via `resvg` rasterisation to
+    PNG. EMF / WMF are not yet supported (need a transcoder).
+  - **Pages, page breaks, fonts (embedded), table borders** ✅ working.
+  - **Header / footer images** ❌ — 6 fixtures with header images still
+    produce 0 Image XObjects (`header-with-textbox`, `oversized-header-image`,
+    `template-with-hf-rule`, etc.). Header/footer is a separate render
+    path that needs the same inline-image fix applied.
+  - **Drawing-ML shapes (non-image)** ❌ — `<wps:wsp>` shapes,
+    DrawingML primitives still vanish.
+  - **EMF / WMF** ❌ — no transcoder; metafile images skip silently.
+
+  Tracked on the [roadmap](docs/roadmap.md) and live in
+  [`docs/pdf-coverage.md`](docs/pdf-coverage.md) which regenerates on
+  every test run.
 - **ODT round-trip fidelity is at parity with DOCX.** No-edits,
   non-body-on-edits, and body-on-edits all at **4 / 4** zero-drop
   (`crates/s1engine/tests/odt_coverage.rs` +

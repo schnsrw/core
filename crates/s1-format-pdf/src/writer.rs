@@ -495,10 +495,19 @@ fn collect_and_embed_images(
                 let name = format!("Im{}", *img_idx);
                 *img_idx += 1;
 
-                if ct.contains("jpeg") || ct.contains("jpg") || is_jpeg(data) {
+                // SVG → rasterise to PNG first (image crate doesn't
+                // decode SVG). On rasteriser failure, skip the image
+                // instead of aborting the whole PDF.
+                if ct.contains("svg") || is_svg(data) {
+                    match rasterize_svg(data) {
+                        Some(png) => embed_decoded_image(pdf, xobject_ref, &png)?,
+                        None => continue,
+                    }
+                } else if ct.contains("jpeg") || ct.contains("jpg") || is_jpeg(data) {
                     embed_jpeg_image(pdf, xobject_ref, data)?;
                 } else {
-                    // Try to decode as PNG or other image format via the `image` crate
+                    // Try to decode as PNG / WebP / BMP / GIF / TIFF / ICO
+                    // via the `image` crate.
                     embed_decoded_image(pdf, xobject_ref, data)?;
                 }
 
@@ -508,6 +517,73 @@ fn collect_and_embed_images(
                 for row in rows {
                     for cell in &row.cells {
                         collect_and_embed_images(pdf, alloc, &cell.blocks, image_map, img_idx)?;
+                    }
+                }
+            }
+            LayoutBlockKind::Paragraph { lines, .. } => {
+                // Inline images live on `GlyphRun.inline_image`, not as
+                // top-level Image blocks. Without this branch, every
+                // inline picture in DOCX/ODT (the common case — most
+                // real-world images are inline, not floating) reached
+                // the PDF writer's `continue` arm in `draw_line_runs`
+                // and vanished from the output. Walk every line/run
+                // and embed each unique inline image as an XObject.
+                for line in lines {
+                    for run in &line.runs {
+                        let inline = match &run.inline_image {
+                            Some(i) => i,
+                            None => continue,
+                        };
+                        let media_id = inline.media_id.clone();
+                        if image_map.contains_key(&media_id) || media_id.is_empty() {
+                            continue;
+                        }
+                        let data = match &inline.image_data {
+                            Some(d) if !d.is_empty() => d,
+                            _ => continue,
+                        };
+                        const MAX_IMAGE_SIZE: usize = 100 * 1024 * 1024;
+                        if data.len() > MAX_IMAGE_SIZE {
+                            continue;
+                        }
+                        let ct = inline.content_type.as_deref().unwrap_or("");
+                        let xobject_ref = alloc.next();
+                        let name = format!("Im{}", *img_idx);
+                        *img_idx += 1;
+                        // Inline images can be EMF / WMF / TIFF / SVG /
+                        // other formats the `image` crate doesn't
+                        // decode. Skip silently on decode failure
+                        // rather than aborting the entire PDF write —
+                        // matches the "lenient on read, strict on
+                        // write" rule for the rest of the pipeline.
+                        // The block-image path stays strict because
+                        // its source formats are constrained to what
+                        // the layout engine already validated.
+                        let embed_result = if ct.contains("svg") || is_svg(data) {
+                            match rasterize_svg(data) {
+                                Some(png) => embed_decoded_image(pdf, xobject_ref, &png),
+                                None => {
+                                    *img_idx -= 1;
+                                    continue;
+                                }
+                            }
+                        } else if ct.contains("jpeg") || ct.contains("jpg") || is_jpeg(data) {
+                            embed_jpeg_image(pdf, xobject_ref, data)
+                        } else {
+                            embed_decoded_image(pdf, xobject_ref, data)
+                        };
+                        if let Err(_e) = embed_result {
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "[s1-format-pdf] inline image {}: embed failed ({_e}), skipping",
+                                media_id
+                            );
+                            // Refund the index so unused names don't
+                            // litter the resources dictionary.
+                            *img_idx -= 1;
+                            continue;
+                        }
+                        image_map.insert(media_id, PdfImage { name, xobject_ref });
                     }
                 }
             }
@@ -521,6 +597,51 @@ fn collect_and_embed_images(
 /// Check if bytes start with JPEG SOI marker.
 fn is_jpeg(data: &[u8]) -> bool {
     data.len() >= 2 && data[0] == 0xFF && data[1] == 0xD8
+}
+
+/// Heuristic SVG detection — looks for `<svg` after optional XML
+/// declaration / whitespace / DOCTYPE. Used to route SVG bytes through
+/// the rasteriser instead of the `image` crate (which can't decode
+/// SVG natively).
+fn is_svg(data: &[u8]) -> bool {
+    let head_len = data.len().min(1024);
+    let head = match std::str::from_utf8(&data[..head_len]) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    head.contains("<svg")
+}
+
+/// Rasterize SVG bytes to PNG bytes via `resvg`. Returns `None` if the
+/// SVG can't be parsed or rendered. Output PNG is then routed through
+/// `embed_decoded_image`. Resolution defaults to 2× the SVG's intrinsic
+/// size in pixels so the embedded raster reads as crisp at common
+/// view scales.
+fn rasterize_svg(data: &[u8]) -> Option<Vec<u8>> {
+    let opt = usvg::Options::default();
+    let tree = usvg::Tree::from_data(data, &opt).ok()?;
+    let size = tree.size();
+    // Cap dimensions to keep raster sizes sane (~16 MP).
+    const MAX_DIM: f32 = 4096.0;
+    let scale = {
+        let s = 2.0_f32;
+        let w = size.width() * s;
+        let h = size.height() * s;
+        if w > MAX_DIM || h > MAX_DIM {
+            (MAX_DIM / w.max(h)).min(1.0)
+        } else {
+            s
+        }
+    };
+    let w = (size.width() * scale).ceil() as u32;
+    let h = (size.height() * scale).ceil() as u32;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
+    let transform = tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    pixmap.encode_png().ok()
 }
 
 /// Maximum image dimension (pixels) to prevent excessive memory use.
@@ -982,6 +1103,7 @@ fn render_block(
                     &block.bounds,
                     page_height,
                     font_map,
+                    image_map,
                     hyperlinks,
                 );
             }
@@ -1056,6 +1178,7 @@ fn render_line(
     block_bounds: &s1_layout::Rect,
     page_height: f64,
     font_map: &HashMap<FontId, PdfFont>,
+    image_map: &HashMap<String, PdfImage>,
     hyperlinks: &mut Vec<HyperlinkAnnotation>,
 ) {
     // PDF coordinate system: origin at bottom-left, y increases upward
@@ -1066,9 +1189,33 @@ fn render_line(
             continue;
         }
 
-        // Handle inline images
-        if let Some(ref _inline_img) = run.inline_image {
-            // Inline images are rendered as block images by the layout engine
+        // Handle inline images — these were previously silently
+        // dropped on the assumption that "the layout engine renders
+        // them as block images", which was wrong: the layout engine
+        // attaches them to `GlyphRun.inline_image`. Embed the XObject
+        // up in `collect_and_embed_images` (Paragraph walk), then
+        // emit a Do operator here at the run's position.
+        if let Some(ref inline_img) = run.inline_image {
+            if let Some(pdf_img) = image_map.get(&inline_img.media_id) {
+                let pdf_x = block_bounds.x + run.x_offset;
+                // Place the inline image with its top-left at the
+                // run's left edge and the line's baseline; the image
+                // box extends upward by its height. PDF transform is
+                // [a b c d e f] = [w 0 0 h tx ty] with origin at
+                // bottom-left.
+                let pdf_y = pdf_baseline_y;
+                content.save_state();
+                content.transform([
+                    inline_img.width as f32,
+                    0.0,
+                    0.0,
+                    inline_img.height as f32,
+                    pdf_x as f32,
+                    pdf_y as f32,
+                ]);
+                content.x_object(Name(pdf_img.name.as_bytes()));
+                content.restore_state();
+            }
             continue;
         }
 
@@ -1374,6 +1521,7 @@ fn render_block_with_offset(
                     &adjusted_bounds,
                     page_height,
                     font_map,
+                    image_map,
                     hyperlinks,
                 );
             }

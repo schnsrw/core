@@ -7,8 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`pdf_coverage` scorecard** (`crates/s1engine/tests/pdf_coverage.rs`)
+  — renders every DOCX + ODT fixture through
+  `Document::export(Format::Pdf)` and inspects the resulting PDF via
+  `lopdf`: counts pages, `Tj` text-show ops, Image XObjects,
+  embedded fonts, vector path ops, then reports per-fixture and
+  aggregate gaps. Output also rendered to
+  [`docs/pdf-coverage.md`](docs/pdf-coverage.md).
+- **Multi-format image support in PDF export.** Image XObjects now
+  cover PNG, JPEG / JPG, WebP, BMP, GIF, TIFF, ICO (via the
+  `image` crate feature flags) plus SVG (via `resvg` rasterised to
+  PNG). EMF / WMF still skip silently — they need a transcoder, not
+  a bitmap decoder.
+
 ### Fixed
 
+- **DOCX → PDF: inline images now actually embed and render.**
+  `crates/s1-format-pdf/src/writer.rs::collect_and_embed_images`
+  only recursed into `Image` and `Table` blocks, never into
+  `Paragraph` blocks where inline images live (DOCX
+  `<wp:inline>` / ODT `<draw:frame>` inside `<text:p>` runs end up
+  as `GlyphRun.inline_image`, not as top-level Image blocks).
+  Combined with a stray `continue` in `render_line` that silently
+  dropped runs carrying an `inline_image`, every inline picture in
+  every fixture vanished from the PDF — exactly the user's
+  "no images" symptom. Both paths fixed. Scorecard delta on the
+  39 DOCX fixtures: **0 / 16 → 10 / 16** image-bearing fixtures
+  now emit Image XObjects. Remaining 6 are header/footer images
+  on a separate render path (next chunk).
 - **DOCX → PDF: text and headers now actually render.**
   `Document::export(Format::Pdf)` was constructing the layout pipeline
   with `FontDatabase::empty()`, so the text-shaping stage produced

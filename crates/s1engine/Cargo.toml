@@ -43,6 +43,7 @@ pretty_assertions = { workspace = true }
 zip = { workspace = true }
 quick-xml = { workspace = true }
 criterion = { workspace = true }
+lopdf = "0.34"
 
 [[bench]]
 name = "engine_bench"
