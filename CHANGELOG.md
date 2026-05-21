@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **ODT Phase 2a** — non-body parts preserved across edits.
+  `Document::export(Odt)` on a dirty document now follows the same
+  splice pattern as DOCX: regenerate `content.xml` only from the
+  model, swap it into a clone of the preserved ODF package, write.
+  `styles.xml`, `meta.xml`, `settings.xml`, `META-INF/manifest.xml`,
+  `Pictures/*`, `Configurations2/*`, `Thumbnails/*` ride through
+  unchanged. New test `crates/s1engine/tests/odt_edit_coverage.rs`
+  asserts the contract: **non-body preserved 4 / 4** on edit; body
+  still drops 20 tag classes (the Phase 2b backlog).
 - **ODT Phase 2** — `Engine::open(Odt)` now keeps the parsed
   `s1_odf::Package` alongside `DocumentModel` via
   `s1_format_odt::read_with_package`, and `Document::export(Odt)`

@@ -66,8 +66,15 @@ The big rock. Detailed plan in
         body-zero-drop jumped 0 / 4 → **4 / 4**; bytes_in ≈ bytes_out
         (1 MB freetestdata fixture now writes back at ~1 MB instead
         of ~4 KB). Contract is asserted, not just reported.
-  - [ ] Phase 2a — non-body parts ride through edits (splice
-        regenerated `content.xml` only).
+  - [x] **Phase 2a** — non-body parts ride through edits.
+        `Document::export(Odt)` on a dirty document now regenerates
+        only `content.xml` from the model and splices it into a
+        clone of the preserved ODF package; `styles.xml`,
+        `meta.xml`, `settings.xml`, `META-INF/manifest.xml`,
+        `Pictures/*`, `Configurations2/*`, `Thumbnails/*` ride
+        through unchanged. New test `odt_edit_coverage`:
+        **non-body preserved 4 / 4** on edit; body still drops 20
+        tag classes (the Phase 2b backlog).
   - [ ] Phase 2b — per-NodeId body splice (BodyOrigin for ODT).
 - [ ] **DOCX → PDF visual fidelity** — user-reported ~2/100 fidelity
       on the rendered PDF (2026-05-22). Path: `s1-format-docx::read` →

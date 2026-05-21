@@ -46,13 +46,12 @@ for the live scorecard.
   PDF pipeline lives at `crates/s1-layout/` and `crates/s1-format-pdf/`,
   but there's currently no visual-fidelity test gating it. Tracked on
   the [roadmap](docs/roadmap.md) as an immediate task.
-- **ODT round-trip fidelity is partially landed.** No-edits path
-  measured by `crates/s1engine/tests/odt_coverage.rs`: **4 / 4**
-  zero-drop now that ODT Phase 2 (`s1-odf` preservation through
-  `Document`) is wired through `Engine::open(Odt)` and
-  `Document::export(Odt)`. With-edits ODT still falls back to
-  regenerating from the model — Phase 2a (non-body splice) and 2b
-  (per-NodeId body splice) are the open work.
+- **ODT round-trip fidelity is partially landed.** No-edits and
+  non-body-on-edits paths now both at **4 / 4** zero-drop
+  (`crates/s1engine/tests/odt_coverage.rs` +
+  `crates/s1engine/tests/odt_edit_coverage.rs`). With-edits body
+  content still drops 20 tag classes — Phase 2b (per-NodeId
+  body splice, mirror of `BodyOrigin` for DOCX) is the open work.
 
 ## Quick start — JavaScript
 
