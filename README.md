@@ -74,33 +74,24 @@ for the live scorecard.
 
 - **DOCX → PDF visual fidelity — partially closed, work in flight.**
   User-reported on 2026-05-22 that the rendered PDF only matched the
-  source at ~2 / 100 ("empty colored tables, no text, no images, no
-  headers"). Audited via the new `crates/s1engine/tests/pdf_coverage.rs`
-  scorecard ([docs/pdf-coverage.md](docs/pdf-coverage.md)). State as of
-  now:
-  - **Text** ✅ — 38/39 DOCX fixtures emit `Tj` operators (the one with
-    0 is `empty.docx`, no text in source). Was 0 — root cause was
-    `Document::export(Format::Pdf)` shipping an empty `FontDatabase`;
-    fixed by using `FontDatabase::new()`.
-  - **Images** ✅ partial — 10/16 image-bearing fixtures now emit
-    `Image` XObjects. Was 0. Root causes were (a) `collect_and_embed_images`
-    not recursing into `Paragraph` blocks where inline images live, and
-    (b) `render_line` having a stray `continue` that dropped inline
-    images. Both fixed. Format support: PNG, JPEG, JPG, WebP, BMP, GIF,
-    TIFF, ICO via the `image` crate; SVG via `resvg` rasterisation to
-    PNG. EMF / WMF are not yet supported (need a transcoder).
-  - **Pages, page breaks, fonts (embedded), table borders** ✅ working.
-  - **Header / footer images** ❌ — 6 fixtures with header images still
-    produce 0 Image XObjects (`header-with-textbox`, `oversized-header-image`,
-    `template-with-hf-rule`, etc.). Header/footer is a separate render
-    path that needs the same inline-image fix applied.
-  - **Drawing-ML shapes (non-image)** ❌ — `<wps:wsp>` shapes,
-    DrawingML primitives still vanish.
-  - **EMF / WMF** ❌ — no transcoder; metafile images skip silently.
+  source at ~2 / 100. Audited and progressively fixed via
+  `crates/s1engine/tests/pdf_coverage.rs`
+  ([docs/pdf-coverage.md](docs/pdf-coverage.md)). Current state:
+  - **Text** ✅ — 38/39 fixtures emit `Tj` operators (the one with 0
+    is `empty.docx` — no text in source).
+  - **Images** ✅ — 0/39 "images vanish" gaps. All image-bearing
+    fixtures now embed `Image` XObjects. Format support: PNG, JPEG,
+    WebP, BMP, GIF, TIFF, ICO, SVG. EMF / WMF still need a transcoder.
+  - **Tables / borders / page geometry** ✅ working.
+  - **Header / footer tables** ✅ — table-based headers (logo bars,
+    two-column name/date rows) now lay out and render.
+  - **`wordprocessingShape` text boxes** ❌ — 3 fixtures. `<wps:wsp>`
+    / `<wps:txbx>` shapes have no raster path; stored as raw XML for
+    round-trip but not rendered. This is the main remaining visual gap.
+  - **EMF / WMF** ❌ — no transcoder; metafile drawings skip silently.
 
-  Tracked on the [roadmap](docs/roadmap.md) and live in
-  [`docs/pdf-coverage.md`](docs/pdf-coverage.md) which regenerates on
-  every test run.
+  Live numbers in [`docs/pdf-coverage.md`](docs/pdf-coverage.md);
+  roadmap tracking in [`docs/roadmap.md`](docs/roadmap.md).
 - **ODT round-trip fidelity is at parity with DOCX.** No-edits,
   non-body-on-edits, and body-on-edits all at **4 / 4** zero-drop
   (`crates/s1engine/tests/odt_coverage.rs` +

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Layout: Tables inside headers / footers now render.** The HF
+  child-walk previously only processed `Paragraph` nodes, silently
+  dropping table-based headers (logo bars, "Name | Date" two-column
+  rows) and any images nested inside their cells. The loop now handles
+  both `Paragraph` and `Table` children; the collapse-to-single-block
+  logic returns the first `Table` block when the header is
+  table-driven. (`crates/s1-layout/src/engine.rs`)
+
+- **Layout: empty Drawing anchor nodes no longer inflate line height.**
+  `Drawing` / `Image` nodes that carry neither a media reference nor
+  explicit dimensions (broken DOCX anchor elements from some producers)
+  were emitting a phantom 100×100 pt shaped run into the containing
+  paragraph, inflating its line height. These nodes are now skipped
+  before the run is pushed. VML shapes that have `ShapeWidth` /
+  `ShapeHeight` but no media are still emitted to reserve space.
+  (`crates/s1-layout/src/engine.rs`)
+
+- **PDF coverage: corrupt test-fixture PNGs replaced.** Both
+  `image-hyperlink.docx` and `oversized-header-image.docx` contained
+  a 78-byte PNG with an IDAT CRC mismatch (expected `0x8592550d`,
+  actual `0x2772d963`). The PDF writer correctly caught the decode
+  error and skipped them, making those fixtures report as
+  "images vanish" even though the pipeline itself was fine. Replaced
+  with a valid 4×4 RGB PNG. The "images vanish" aggregate in
+  `docs/pdf-coverage.md` dropped 2× → 0×.
+
 ### Added
 
 - **`pdf_coverage` scorecard** (`crates/s1engine/tests/pdf_coverage.rs`)
@@ -143,13 +171,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known issues (tracked, not yet fixed)
 
-- **DOCX → PDF visual fidelity ~2 / 100** (user-reported 2026-05-22).
-  The layout + PDF pipeline (`crates/s1-layout/`,
-  `crates/s1-format-pdf/`) does not currently produce a faithful
-  rendering of real-world DOCX inputs. No visual-fidelity test gates
-  this path — the existing `docx_coverage` / `docx_edit_coverage`
-  contracts only check DOCX → DOCX. Pipelined on
-  `docs/roadmap.md`.
+- **DOCX → PDF: `wordprocessingShape` text boxes vanish** (3 fixtures).
+  `<wps:wsp>` / `<wps:txbx>` shapes (inline text boxes, positioned
+  shape groups) have no `<a:blip r:embed>` and no equivalent raster
+  path. They are stored as raw XML for round-trip fidelity but are not
+  yet rendered to the PDF. Tracked in the roadmap; EMF/WMF transcoding
+  is a related blocker for the anchor-image path.
 
 ## [0.1.0] — 2026-05-21
 

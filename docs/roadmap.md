@@ -94,14 +94,34 @@ The big rock. Detailed plan in
         `svg:title`/`desc`, `table:table-columns`,
         `text:sequence-decl[s]`, `draw:image`, `draw:object` — now
         survive edits via the preserved XmlElement.
-- [ ] **DOCX → PDF visual fidelity** — user-reported ~2/100 fidelity
-      on the rendered PDF (2026-05-22). Path: `s1-format-docx::read` →
-      `DocumentModel` → `s1-layout::layout` → `s1-format-pdf::write_pdf`.
-      Currently no visual-fidelity test gates this — `docx_coverage` /
-      `docx_edit_coverage` only measure DOCX ↔ DOCX. Plan: ship a
-      `pdf_coverage` test that compares rendered PDF text/structure
-      against the source DOCX, identify the largest-impact gaps
-      (fonts? images? tables? page geometry?), then close them.
+- [ ] **DOCX → PDF visual fidelity** — user-reported ~2/100 on
+      2026-05-22. Progress:
+  - [x] `pdf_coverage` scorecard shipped — renders every DOCX + ODT
+        fixture through `export(Format::Pdf)` and counts pages, `Tj`
+        ops, Image XObjects, embedded fonts, vector path ops. Output
+        to `docs/pdf-coverage.md` on every run.
+  - [x] Text rendering fixed — root cause was `FontDatabase::empty()`
+        in the export path; switched to `FontDatabase::new()`.
+        38/39 fixtures now emit `Tj` (the one with 0 is `empty.docx`).
+  - [x] Inline image embedding fixed — `collect_and_embed_images` was
+        not recursing into `Paragraph` blocks; `render_line` had a
+        stray `continue` dropping inline images. Both fixed. Format
+        support: PNG, JPEG, WebP, BMP, GIF, TIFF, ICO, SVG.
+  - [x] Header / footer tables now lay out — child-walk extended to
+        handle `Table` children alongside `Paragraph`; empty Drawing
+        anchor nodes no longer inject phantom 100×100 pt runs.
+  - [x] Corrupt test-fixture PNGs replaced — `image-hyperlink.docx`
+        and `oversized-header-image.docx` had IDAT CRC mismatches;
+        "images vanish" aggregate 2× → 0×.
+  - [ ] **`wordprocessingShape` text boxes** — 3 fixtures
+        (`drawingml-shape`, `wpg-group`, `textbox-test`). `<wps:wsp>`
+        / `<wps:txbx>` shapes have no raster blip; stored as raw XML
+        for round-trip but the layout + PDF writer has no shape
+        rendering path. Main remaining visual gap.
+  - [ ] **EMF / WMF transcoding** — metafile drawings in
+        `issue-319-sections.docx` (13 drawings) skip silently. Need
+        a transcoder (e.g. `libemf2svg` or rasterisation via
+        `emf-rs`) to convert to a bitmap the PDF writer can embed.
 
 ## Then — `v0.3.x` — performance + hostile input
 
