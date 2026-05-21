@@ -47,11 +47,13 @@ for the live scorecard.
   but there's currently no visual-fidelity test gating it. Tracked on
   the [roadmap](docs/roadmap.md) as an immediate task.
 - **ODT round-trip fidelity is partially landed.** No-edits and
-  non-body-on-edits paths now both at **4 / 4** zero-drop
+  non-body-on-edits paths both at **4 / 4** zero-drop
   (`crates/s1engine/tests/odt_coverage.rs` +
   `crates/s1engine/tests/odt_edit_coverage.rs`). With-edits body
-  content still drops 20 tag classes — Phase 2b (per-NodeId
-  body splice, mirror of `BodyOrigin` for DOCX) is the open work.
+  content still drops 11 tag classes (down from 20 after Phase 2a's
+  XmlTree-level splice recovered the automatic-styles / font-face /
+  scripts cascade). Closing the remaining 11 is Phase 2b
+  (per-NodeId body splice, mirror of `BodyOrigin` for DOCX).
 
 ## Quick start — JavaScript
 

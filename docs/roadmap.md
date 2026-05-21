@@ -67,15 +67,22 @@ The big rock. Detailed plan in
         (1 MB freetestdata fixture now writes back at ~1 MB instead
         of ~4 KB). Contract is asserted, not just reported.
   - [x] **Phase 2a** — non-body parts ride through edits.
-        `Document::export(Odt)` on a dirty document now regenerates
-        only `content.xml` from the model and splices it into a
-        clone of the preserved ODF package; `styles.xml`,
-        `meta.xml`, `settings.xml`, `META-INF/manifest.xml`,
-        `Pictures/*`, `Configurations2/*`, `Thumbnails/*` ride
-        through unchanged. New test `odt_edit_coverage`:
-        **non-body preserved 4 / 4** on edit; body still drops 20
-        tag classes (the Phase 2b backlog).
+        `Document::export(Odt)` on a dirty document splices at the
+        XmlTree tier: regenerated `<office:body>` swaps into the
+        preserved `content.xml` while sibling sections
+        (`<office:automatic-styles>`, `<office:font-face-decls>`,
+        `<office:scripts>`, `<office:settings>`) ride through.
+        Surrounding parts (`styles.xml`, `meta.xml`,
+        `META-INF/manifest.xml`, `Pictures/*`, `Configurations2/*`,
+        `Thumbnails/*`) also preserved via the package clone.
+        Dropped tag classes on edit went **20 → 11** (the styles
+        cascade — `style:*-properties` 88+60+16+15+10+4x,
+        `style:font-face` 18x, `office:font-face-decls`,
+        `office:scripts` — all recovered).
   - [ ] Phase 2b — per-NodeId body splice (BodyOrigin for ODT).
+        Remaining 11 dropped classes are all body-internal
+        (`draw:frame` 10x, `text:span` 8x, `text:s` 29x,
+        `text:soft-page-break` 11x, `svg:title`/`desc`, …).
 - [ ] **DOCX → PDF visual fidelity** — user-reported ~2/100 fidelity
       on the rendered PDF (2026-05-22). Path: `s1-format-docx::read` →
       `DocumentModel` → `s1-layout::layout` → `s1-format-pdf::write_pdf`.
