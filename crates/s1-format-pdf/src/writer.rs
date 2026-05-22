@@ -365,22 +365,23 @@ fn embed_fonts(
             cid_font.font_descriptor(descriptor_ref);
             cid_font.default_width(1000.0);
 
-            // Write glyph widths
+            // Write glyph widths.
+            // Each glyph gets its own single-element consecutive entry so that
+            // gaps between glyph IDs don't corrupt the width table. The old
+            // approach wrote one consecutive range starting at first_gid with
+            // all widths — but glyph IDs from shaping are not necessarily
+            // consecutive, so gaps caused neighbouring glyph IDs to receive
+            // each other's widths, producing character overlap or extra space.
             if !glyph_ids.is_empty() {
                 let mut sorted_gids: Vec<u16> = glyph_ids.clone();
                 sorted_gids.sort();
-                let widths: Vec<f32> = sorted_gids
-                    .iter()
-                    .map(|&gid| {
-                        font.glyph_hor_advance(gid)
-                            .map(|a| a as f32 * 1000.0 / upem as f32)
-                            .unwrap_or(500.0)
-                    })
-                    .collect();
-                if let Some(&first_gid) = sorted_gids.first() {
-                    cid_font
-                        .widths()
-                        .consecutive(first_gid, widths.iter().copied());
+                let mut ws = cid_font.widths();
+                for &gid in &sorted_gids {
+                    let w = font
+                        .glyph_hor_advance(gid)
+                        .map(|a| a as f32 * 1000.0 / upem as f32)
+                        .unwrap_or(500.0);
+                    ws.consecutive(gid, std::iter::once(w));
                 }
             }
             cid_font.finish();
