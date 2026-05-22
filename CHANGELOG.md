@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PDF: glyph advance widths now correct — character overlap fixed.**
+  The CIDFont W (width) array was written as a single consecutive range
+  starting at the lowest glyph ID in the document. Because glyph IDs from
+  text shaping are non-consecutive (gaps are common), intermediate IDs
+  received each other's advance widths, causing character overlap and
+  irregular spacing in every rendered PDF. Most visible on the GitHub
+  Pages demo (WASM / NotoSans fallback) where glyph-ID gaps are larger.
+  Fixed by writing one `consecutive(gid, [width])` W entry per glyph so
+  each ID maps to exactly its own advance width.
+
 - **Layout: Tables inside headers / footers now render.** The HF
   child-walk previously only processed `Paragraph` nodes, silently
   dropping table-based headers (logo bars, "Name | Date" two-column
