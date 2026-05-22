@@ -118,10 +118,12 @@ The big rock. Detailed plan in
         / `<wps:txbx>` shapes have no raster blip; stored as raw XML
         for round-trip but the layout + PDF writer has no shape
         rendering path. Main remaining visual gap.
-  - [ ] **EMF / WMF transcoding** — metafile drawings in
-        `issue-319-sections.docx` (13 drawings) skip silently. Need
-        a transcoder (e.g. `libemf2svg` or rasterisation via
-        `emf-rs`) to convert to a bitmap the PDF writer can embed.
+  - [x] **EMF / WMF transcoding** — `crates/s1-format-pdf/src/emf.rs`
+        implements EMF → SVG (geometric primitives, GDI objects,
+        path brackets, text, embedded DIBs) rasterised to PNG via
+        `resvg`. `issue-319-sections.docx` went 0 → **13** `Do` ops;
+        all 13 EMF drawings now embed. Both block-level and inline
+        image paths route through the transcoder.
 
 ## Then — `v0.3.x` — performance + hostile input
 

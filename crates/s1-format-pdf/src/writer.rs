@@ -495,19 +495,21 @@ fn collect_and_embed_images(
                 let name = format!("Im{}", *img_idx);
                 *img_idx += 1;
 
-                // SVG → rasterise to PNG first (image crate doesn't
-                // decode SVG). On rasteriser failure, skip the image
-                // instead of aborting the whole PDF.
+                // Routing: SVG → resvg, EMF/WMF → emf_to_svg → resvg,
+                // JPEG → direct embed, everything else → image crate.
                 if ct.contains("svg") || is_svg(data) {
                     match rasterize_svg(data) {
+                        Some(png) => embed_decoded_image(pdf, xobject_ref, &png)?,
+                        None => continue,
+                    }
+                } else if ct.contains("emf") || ct.contains("wmf") || is_emf(data) || is_wmf(data) {
+                    match transcode_metafile_to_png(data) {
                         Some(png) => embed_decoded_image(pdf, xobject_ref, &png)?,
                         None => continue,
                     }
                 } else if ct.contains("jpeg") || ct.contains("jpg") || is_jpeg(data) {
                     embed_jpeg_image(pdf, xobject_ref, data)?;
                 } else {
-                    // Try to decode as PNG / WebP / BMP / GIF / TIFF / ICO
-                    // via the `image` crate.
                     embed_decoded_image(pdf, xobject_ref, data)?;
                 }
 
@@ -567,6 +569,14 @@ fn collect_and_embed_images(
                                     continue;
                                 }
                             }
+                        } else if ct.contains("emf") || ct.contains("wmf") || is_emf(data) || is_wmf(data) {
+                            match transcode_metafile_to_png(data) {
+                                Some(png) => embed_decoded_image(pdf, xobject_ref, &png),
+                                None => {
+                                    *img_idx -= 1;
+                                    continue;
+                                }
+                            }
                         } else if ct.contains("jpeg") || ct.contains("jpg") || is_jpeg(data) {
                             embed_jpeg_image(pdf, xobject_ref, data)
                         } else {
@@ -597,6 +607,36 @@ fn collect_and_embed_images(
 /// Check if bytes start with JPEG SOI marker.
 fn is_jpeg(data: &[u8]) -> bool {
     data.len() >= 2 && data[0] == 0xFF && data[1] == 0xD8
+}
+
+/// Check if bytes are an EMF file (Enhanced Metafile).
+/// EMF header starts with record type 1 (EMR_HEADER) as a little-endian u32.
+fn is_emf(data: &[u8]) -> bool {
+    data.len() >= 4 && data[0] == 0x01 && data[1] == 0x00 && data[2] == 0x00 && data[3] == 0x00
+}
+
+/// Check if bytes are a WMF file. Placeable WMF starts with magic 0x9AC6CDD7;
+/// standard WMF starts with record type 1 (0x0001) followed by header size.
+fn is_wmf(data: &[u8]) -> bool {
+    if data.len() < 4 {
+        return false;
+    }
+    // Placeable WMF magic
+    if data[0] == 0xD7 && data[1] == 0xCD && data[2] == 0xC6 && data[3] == 0x9A {
+        return true;
+    }
+    false
+}
+
+/// Transcode EMF or WMF to PNG via the EMF→SVG→PNG pipeline.
+/// Returns `None` if the data is not a recognised metafile or transcoding fails.
+fn transcode_metafile_to_png(data: &[u8]) -> Option<Vec<u8>> {
+    if is_emf(data) {
+        let svg = crate::emf::emf_to_svg(data)?;
+        rasterize_svg(svg.as_bytes())
+    } else {
+        None
+    }
 }
 
 /// Heuristic SVG detection — looks for `<svg` after optional XML

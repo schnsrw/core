@@ -88,7 +88,8 @@ for the live scorecard.
   - **`wordprocessingShape` text boxes** ❌ — 3 fixtures. `<wps:wsp>`
     / `<wps:txbx>` shapes have no raster path; stored as raw XML for
     round-trip but not rendered. This is the main remaining visual gap.
-  - **EMF / WMF** ❌ — no transcoder; metafile drawings skip silently.
+  - **EMF / WMF** ✅ — transcoded via EMF→SVG→PNG pipeline; all 13
+    drawings in `issue-319-sections.docx` now embed.
 
   Live numbers in [`docs/pdf-coverage.md`](docs/pdf-coverage.md);
   roadmap tracking in [`docs/roadmap.md`](docs/roadmap.md).

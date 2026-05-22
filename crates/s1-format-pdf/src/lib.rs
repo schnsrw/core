@@ -15,6 +15,7 @@
 //! and modifying existing PDFs: text overlay, annotations, page manipulation,
 //! form filling, and more. Uses `lopdf` for PDF structure manipulation.
 
+pub mod emf;
 pub mod error;
 pub mod writer;
 

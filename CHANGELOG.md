@@ -44,6 +44,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embedded fonts, vector path ops, then reports per-fixture and
   aggregate gaps. Output also rendered to
   [`docs/pdf-coverage.md`](docs/pdf-coverage.md).
+- **EMF / WMF metafile transcoding in PDF export.** A new
+  `crates/s1-format-pdf/src/emf.rs` module implements an
+  EMF → SVG transcoder covering the GDI record types found in DOCX
+  fixtures: geometric primitives (`RECTANGLE`, `ELLIPSE`, `LINETO`,
+  `POLYLINE16`, `POLYBEZIER16`), GDI object management
+  (`CREATEPEN`, `EXTCREATEPEN`, `CREATEBRUSHINDIRECT`,
+  `EXTCREATEFONTINDIRECTW`, `SELECTOBJECT`, `DELETEOBJECT`),
+  path brackets (`BEGINPATH` / `FILLPATH` / `STROKEPATH`), text
+  (`EXTTEXTOUTW` / `EXTTEXTOUTA`), and embedded DIB bitmaps
+  (`BITBLT` / `STRETCHDIBITS`). The SVG is then rasterised to PNG
+  via `resvg` and embedded as an Image XObject.
+  `issue-319-sections.docx` went from 0 → **13** `Do` ops; all 13
+  EMF drawings now embed. The block-level and inline image paths
+  both route through the transcoder.
+
 - **Multi-format image support in PDF export.** Image XObjects now
   cover PNG, JPEG / JPG, WebP, BMP, GIF, TIFF, ICO (via the
   `image` crate feature flags) plus SVG (via `resvg` rasterised to
