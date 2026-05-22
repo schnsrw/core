@@ -7,7 +7,6 @@
 ///
 /// Returns `None` only if the bytes don't start with the EMF magic
 /// `01 00 00 00` or if the header is too short to be valid.
-
 use std::collections::HashMap;
 
 // ── EMR record type constants ──────────────────────────────────────────────
@@ -88,21 +87,46 @@ impl Default for GdiObject {
 
 fn stock_pen(handle: u32) -> GdiObject {
     match handle {
-        STOCK_WHITE_PEN => GdiObject::Pen { style: 0, width: 1, colorref: 0x00FFFFFF },
-        STOCK_NULL_PEN => GdiObject::Pen { style: 5, width: 0, colorref: 0 },
-        _ => GdiObject::Pen { style: 0, width: 1, colorref: 0x00000000 }, // BLACK_PEN
+        STOCK_WHITE_PEN => GdiObject::Pen {
+            style: 0,
+            width: 1,
+            colorref: 0x00FFFFFF,
+        },
+        STOCK_NULL_PEN => GdiObject::Pen {
+            style: 5,
+            width: 0,
+            colorref: 0,
+        },
+        _ => GdiObject::Pen {
+            style: 0,
+            width: 1,
+            colorref: 0x00000000,
+        }, // BLACK_PEN
     }
 }
 
 fn stock_brush(handle: u32) -> GdiObject {
     match handle {
-        STOCK_WHITE_BRUSH | STOCK_LTGRAY_BRUSH => {
-            GdiObject::Brush { style: 0, colorref: 0x00FFFFFF }
-        }
-        STOCK_GRAY_BRUSH => GdiObject::Brush { style: 0, colorref: 0x00808080 },
-        STOCK_BLACK_BRUSH => GdiObject::Brush { style: 0, colorref: 0x00000000 },
-        STOCK_NULL_BRUSH => GdiObject::Brush { style: 1, colorref: 0 },
-        _ => GdiObject::Brush { style: 1, colorref: 0 },
+        STOCK_WHITE_BRUSH | STOCK_LTGRAY_BRUSH => GdiObject::Brush {
+            style: 0,
+            colorref: 0x00FFFFFF,
+        },
+        STOCK_GRAY_BRUSH => GdiObject::Brush {
+            style: 0,
+            colorref: 0x00808080,
+        },
+        STOCK_BLACK_BRUSH => GdiObject::Brush {
+            style: 0,
+            colorref: 0x00000000,
+        },
+        STOCK_NULL_BRUSH => GdiObject::Brush {
+            style: 1,
+            colorref: 0,
+        },
+        _ => GdiObject::Brush {
+            style: 1,
+            colorref: 0,
+        },
     }
 }
 
@@ -151,14 +175,65 @@ impl EmfState {
             bitmaps: Vec::new(),
         };
         // Pre-populate stock objects
-        s.objects.insert(STOCK_WHITE_BRUSH, GdiObject::Brush { style: 0, colorref: 0x00FFFFFF });
-        s.objects.insert(STOCK_LTGRAY_BRUSH, GdiObject::Brush { style: 0, colorref: 0x00C0C0C0 });
-        s.objects.insert(STOCK_GRAY_BRUSH, GdiObject::Brush { style: 0, colorref: 0x00808080 });
-        s.objects.insert(STOCK_BLACK_BRUSH, GdiObject::Brush { style: 0, colorref: 0x00000000 });
-        s.objects.insert(STOCK_NULL_BRUSH, GdiObject::Brush { style: 1, colorref: 0 });
-        s.objects.insert(STOCK_WHITE_PEN, GdiObject::Pen { style: 0, width: 1, colorref: 0x00FFFFFF });
-        s.objects.insert(STOCK_BLACK_PEN, GdiObject::Pen { style: 0, width: 1, colorref: 0x00000000 });
-        s.objects.insert(STOCK_NULL_PEN, GdiObject::Pen { style: 5, width: 0, colorref: 0 });
+        s.objects.insert(
+            STOCK_WHITE_BRUSH,
+            GdiObject::Brush {
+                style: 0,
+                colorref: 0x00FFFFFF,
+            },
+        );
+        s.objects.insert(
+            STOCK_LTGRAY_BRUSH,
+            GdiObject::Brush {
+                style: 0,
+                colorref: 0x00C0C0C0,
+            },
+        );
+        s.objects.insert(
+            STOCK_GRAY_BRUSH,
+            GdiObject::Brush {
+                style: 0,
+                colorref: 0x00808080,
+            },
+        );
+        s.objects.insert(
+            STOCK_BLACK_BRUSH,
+            GdiObject::Brush {
+                style: 0,
+                colorref: 0x00000000,
+            },
+        );
+        s.objects.insert(
+            STOCK_NULL_BRUSH,
+            GdiObject::Brush {
+                style: 1,
+                colorref: 0,
+            },
+        );
+        s.objects.insert(
+            STOCK_WHITE_PEN,
+            GdiObject::Pen {
+                style: 0,
+                width: 1,
+                colorref: 0x00FFFFFF,
+            },
+        );
+        s.objects.insert(
+            STOCK_BLACK_PEN,
+            GdiObject::Pen {
+                style: 0,
+                width: 1,
+                colorref: 0x00000000,
+            },
+        );
+        s.objects.insert(
+            STOCK_NULL_PEN,
+            GdiObject::Pen {
+                style: 5,
+                width: 0,
+                colorref: 0,
+            },
+        );
         s
     }
 
@@ -172,7 +247,11 @@ impl EmfState {
 
     fn stroke_attrs(&self) -> String {
         match self.pen() {
-            Some(GdiObject::Pen { style, width, colorref }) if *style != 5 => {
+            Some(GdiObject::Pen {
+                style,
+                width,
+                colorref,
+            }) if *style != 5 => {
                 let color = colorref_to_css(*colorref);
                 let w = (*width as f64).max(1.0);
                 let dash = match style {
@@ -249,9 +328,14 @@ fn handle_createpen(state: &mut EmfState, rec: &[u8], handle_idx: u32) {
     let style = read_u32(rec, 8);
     let width = read_u32(rec, 12) as u32;
     let colorref = read_u32(rec, 20);
-    state
-        .objects
-        .insert(handle_idx, GdiObject::Pen { style, width: width.max(1), colorref });
+    state.objects.insert(
+        handle_idx,
+        GdiObject::Pen {
+            style,
+            width: width.max(1),
+            colorref,
+        },
+    );
 }
 
 fn handle_extcreatepen(state: &mut EmfState, rec: &[u8], handle_idx: u32) {
@@ -264,9 +348,14 @@ fn handle_extcreatepen(state: &mut EmfState, rec: &[u8], handle_idx: u32) {
     let width = read_u32(rec, 32).max(1);
     let colorref = read_u32(rec, 40);
     let pen_style = style & 0x0F; // lower nibble is PS_ style
-    state
-        .objects
-        .insert(handle_idx, GdiObject::Pen { style: pen_style, width, colorref });
+    state.objects.insert(
+        handle_idx,
+        GdiObject::Pen {
+            style: pen_style,
+            width,
+            colorref,
+        },
+    );
 }
 
 fn handle_createbrush(state: &mut EmfState, rec: &[u8], handle_idx: u32) {
@@ -276,7 +365,9 @@ fn handle_createbrush(state: &mut EmfState, rec: &[u8], handle_idx: u32) {
     }
     let style = read_u32(rec, 8);
     let colorref = read_u32(rec, 12);
-    state.objects.insert(handle_idx, GdiObject::Brush { style, colorref });
+    state
+        .objects
+        .insert(handle_idx, GdiObject::Brush { style, colorref });
 }
 
 fn handle_extcreatefont(state: &mut EmfState, rec: &[u8], handle_idx: u32) {
@@ -303,7 +394,12 @@ fn handle_extcreatefont(state: &mut EmfState, rec: &[u8], handle_idx: u32) {
     }
     state.objects.insert(
         handle_idx,
-        GdiObject::Font { face, height, bold: weight >= 700, italic },
+        GdiObject::Font {
+            face,
+            height,
+            bold: weight >= 700,
+            italic,
+        },
     );
 }
 
@@ -319,10 +415,7 @@ fn handle_selectobject(state: &mut EmfState, rec: &[u8]) {
         Some(GdiObject::Font { .. }) => {} // font selection tracked elsewhere
         _ => {
             // Stock object — classify by range
-            if handle == STOCK_NULL_PEN
-                || handle == STOCK_WHITE_PEN
-                || handle == STOCK_BLACK_PEN
-            {
+            if handle == STOCK_NULL_PEN || handle == STOCK_WHITE_PEN || handle == STOCK_BLACK_PEN {
                 state.pen_idx = handle;
             } else if handle >= STOCK_WHITE_BRUSH && handle <= STOCK_NULL_BRUSH {
                 state.brush_idx = handle;
@@ -342,7 +435,9 @@ fn handle_rectangle(state: &mut EmfState, rec: &[u8]) {
     let y2 = read_i32(rec, 20) as f64;
     let (x, y, w, h) = (x1, y1, (x2 - x1).abs(), (y2 - y1).abs());
     let attrs = state.shape_attrs();
-    state.push(format!("<rect x=\"{x:.2}\" y=\"{y:.2}\" width=\"{w:.2}\" height=\"{h:.2}\" {attrs}/>"));
+    state.push(format!(
+        "<rect x=\"{x:.2}\" y=\"{y:.2}\" width=\"{w:.2}\" height=\"{h:.2}\" {attrs}/>"
+    ));
 }
 
 fn handle_ellipse(state: &mut EmfState, rec: &[u8]) {
@@ -358,7 +453,9 @@ fn handle_ellipse(state: &mut EmfState, rec: &[u8]) {
     let rx = (x2 - x1).abs() / 2.0;
     let ry = (y2 - y1).abs() / 2.0;
     let attrs = state.shape_attrs();
-    state.push(format!("<ellipse cx=\"{cx:.2}\" cy=\"{cy:.2}\" rx=\"{rx:.2}\" ry=\"{ry:.2}\" {attrs}/>"));
+    state.push(format!(
+        "<ellipse cx=\"{cx:.2}\" cy=\"{cy:.2}\" rx=\"{rx:.2}\" ry=\"{ry:.2}\" {attrs}/>"
+    ));
 }
 
 fn handle_lineto(state: &mut EmfState, rec: &[u8]) {
@@ -370,7 +467,9 @@ fn handle_lineto(state: &mut EmfState, rec: &[u8]) {
     let x0 = state.cur_x;
     let y0 = state.cur_y;
     let stroke = state.stroke_attrs();
-    state.push(format!("<line x1=\"{x0:.2}\" y1=\"{y0:.2}\" x2=\"{x:.2}\" y2=\"{y:.2}\" fill=\"none\" {stroke}/>"));
+    state.push(format!(
+        "<line x1=\"{x0:.2}\" y1=\"{y0:.2}\" x2=\"{x:.2}\" y2=\"{y:.2}\" fill=\"none\" {stroke}/>"
+    ));
     state.cur_x = x;
     state.cur_y = y;
 }
@@ -466,7 +565,9 @@ fn handle_polybezierto16(state: &mut EmfState, rec: &[u8]) {
         let y2 = read_i16(rec, pts_off + (i + 1) * 4 + 2) as f64;
         let x3 = read_i16(rec, pts_off + (i + 2) * 4) as f64;
         let y3 = read_i16(rec, pts_off + (i + 2) * 4 + 2) as f64;
-        d.push_str(&format!(" C{x1:.2},{y1:.2} {x2:.2},{y2:.2} {x3:.2},{y3:.2}"));
+        d.push_str(&format!(
+            " C{x1:.2},{y1:.2} {x2:.2},{y2:.2} {x3:.2},{y3:.2}"
+        ));
         state.cur_x = x3;
         state.cur_y = y3;
         i += 3;
@@ -711,7 +812,9 @@ pub fn emf_to_svg(data: &[u8]) -> Option<String> {
                     state.bk_mode = read_u32(rec, 8);
                 }
             }
-            EMR_SETTEXTALIGN | EMR_INTERSECTCLIPRECT | EMR_SETWORLDTRANSFORM
+            EMR_SETTEXTALIGN
+            | EMR_INTERSECTCLIPRECT
+            | EMR_SETWORLDTRANSFORM
             | EMR_MODIFYWORLDTRANSFORM => {}
 
             EMR_MOVETOEX => handle_movetoex(&mut state, rec),

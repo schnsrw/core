@@ -1976,6 +1976,7 @@ fn insert_shape_node(
 ///
 /// Inspects the raw XML to classify the drawing as a diagram (SmartArt), chart,
 /// OLE embedded object, or generic drawing, and stores a descriptive `ShapeType`.
+/// For `wps:wsp` text boxes, also extracts dimensions and text content.
 fn insert_drawing_xml_node(
     doc: &mut DocumentModel,
     para_id: NodeId,
@@ -1985,7 +1986,6 @@ fn insert_drawing_xml_node(
     let drawing_id = doc.next_id();
     let mut drawing_node = Node::new(drawing_id, NodeType::Drawing);
 
-    // Q6 Step 2 / Q7 Step 2: Classify the drawing type from its raw XML content.
     let shape_type = classify_drawing_type(raw_xml);
 
     drawing_node
@@ -1995,6 +1995,35 @@ fn insert_drawing_xml_node(
         AttributeKey::ShapeRawXml,
         AttributeValue::String(raw_xml.to_string()),
     );
+
+    // For wordprocessingShape text boxes, extract dimensions and text content
+    // so the layout + PDF layers can render them instead of silently dropping them.
+    if raw_xml.contains("wps:wsp") || raw_xml.contains("wps:txbx") {
+        if let Some((w, h)) = extract_ext_dimensions(raw_xml) {
+            drawing_node
+                .attributes
+                .set(AttributeKey::ShapeWidth, AttributeValue::Float(w));
+            drawing_node
+                .attributes
+                .set(AttributeKey::ShapeHeight, AttributeValue::Float(h));
+        }
+        if let Some(sc) = extract_stroke_color(raw_xml) {
+            drawing_node
+                .attributes
+                .set(AttributeKey::ShapeStrokeColor, AttributeValue::String(sc));
+        }
+        if let Some(sw) = extract_stroke_width(raw_xml) {
+            drawing_node
+                .attributes
+                .set(AttributeKey::ShapeStrokeWidth, AttributeValue::Float(sw));
+        }
+        let text = extract_txbx_text(raw_xml);
+        if !text.is_empty() {
+            drawing_node
+                .attributes
+                .set(AttributeKey::ShapeText, AttributeValue::String(text));
+        }
+    }
 
     doc.insert_node(para_id, *child_index, drawing_node)
         .map_err(|e| {
@@ -2006,6 +2035,152 @@ fn insert_drawing_xml_node(
     *child_index += 1;
 
     Ok(())
+}
+
+/// Extract width and height from `<a:ext cx="..." cy="..."/>` in EMU units.
+fn extract_ext_dimensions(raw_xml: &str) -> Option<(f64, f64)> {
+    // Find <a:ext cx="N" cy="N"/> or <a:ext cx="N" cy="N">
+    let ext_pos = raw_xml.find("a:ext")?;
+    let after = &raw_xml[ext_pos..];
+    let close = after.find('>')?;
+    let tag = &after[..close];
+
+    let cx = parse_xml_attr(tag, "cx")?;
+    let cy = parse_xml_attr(tag, "cy")?;
+    let w = cx as f64 / 914_400.0 * 72.0; // EMU → points
+    let h = cy as f64 / 914_400.0 * 72.0;
+    Some((w, h))
+}
+
+/// Extract stroke color from `<a:ln ...><a:solidFill><a:srgbClr val="RRGGBB"/>`.
+fn extract_stroke_color(raw_xml: &str) -> Option<String> {
+    // Find <a:ln, then look for srgbClr val= after it
+    let ln_pos = raw_xml.find("<a:ln")?;
+    let after_ln = &raw_xml[ln_pos..];
+    let srgb_pos = after_ln.find("srgbClr")?;
+    let after_srgb = &after_ln[srgb_pos..];
+    let val_pos = after_srgb.find("val=")?;
+    let after_val = &after_srgb[val_pos + 4..];
+    // strip leading quote
+    let after_val = after_val.trim_start_matches('"').trim_start_matches('\'');
+    let end = after_val.find(|c: char| c == '"' || c == '\'' || c == '/' || c == '>')?;
+    let color = &after_val[..end];
+    if color.len() == 6 && color.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(color.to_uppercase())
+    } else {
+        None
+    }
+}
+
+/// Extract stroke width from `<a:ln w="N">` where N is in EMU (1/914400 inch).
+fn extract_stroke_width(raw_xml: &str) -> Option<f64> {
+    let ln_pos = raw_xml.find("<a:ln")?;
+    let after = &raw_xml[ln_pos..];
+    let close = after.find('>')?;
+    let tag = &after[..close];
+    let w_emu = parse_xml_attr(tag, "w")?;
+    // a:ln w is in EMU: convert to points
+    Some(w_emu as f64 / 914_400.0 * 72.0)
+}
+
+/// Extract plain text from `wps:txbx > w:txbxContent`, collecting `<w:t>` elements.
+/// Paragraph breaks become `\n`.
+fn extract_txbx_text(raw_xml: &str) -> String {
+    let mut result = String::new();
+    let mut search = raw_xml;
+    let mut first_para = true;
+
+    // Walk through <w:p> elements
+    while let Some(p_start) = search.find("<w:p") {
+        let after_p = &search[p_start..];
+        // Find end of this <w:p>
+        let p_end = find_closing_element(after_p, "w:p").unwrap_or(after_p.len());
+        let para_xml = &after_p[..p_end];
+
+        // Collect all <w:t>...</w:t> text within this paragraph
+        let mut para_text = String::new();
+        let mut inner = para_xml;
+        while let Some(t_start) = inner.find("<w:t") {
+            let after_t = &inner[t_start..];
+            // Find end of opening tag
+            if let Some(tag_close) = after_t.find('>') {
+                let opening_tag = &after_t[..=tag_close];
+                if opening_tag.ends_with("/>") {
+                    // Self-closing <w:t/> — empty
+                    inner = &after_t[tag_close + 1..];
+                    continue;
+                }
+                let content_start = tag_close + 1;
+                if let Some(end_tag) = after_t[content_start..].find("</w:t>") {
+                    let text = &after_t[content_start..content_start + end_tag];
+                    para_text.push_str(text);
+                    inner = &after_t[content_start + end_tag + 6..];
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        if !para_text.is_empty() || !first_para {
+            if !first_para {
+                result.push('\n');
+            }
+            result.push_str(&para_text);
+            first_para = false;
+        } else if !first_para {
+            result.push('\n');
+        }
+
+        search = if p_end < after_p.len() {
+            &after_p[p_end..]
+        } else {
+            break;
+        };
+    }
+
+    result
+}
+
+/// Find the byte offset of the end of a closing tag `</name>` for an element
+/// starting at the beginning of `xml` (which already starts with `<name...>`).
+fn find_closing_element(xml: &str, name: &str) -> Option<usize> {
+    let close_tag = format!("</{name}>");
+    let mut depth = 0usize;
+    let mut pos = 0;
+    while pos < xml.len() {
+        if xml[pos..].starts_with(&close_tag) {
+            if depth == 0 {
+                return Some(pos + close_tag.len());
+            }
+            depth -= 1;
+            pos += close_tag.len();
+        } else if xml[pos..].starts_with('<') {
+            let tag_start = pos + 1;
+            // Check if it's an opening tag for the same element name
+            if xml[tag_start..].starts_with(name) {
+                let after_name = tag_start + name.len();
+                let ch = xml.as_bytes().get(after_name).copied();
+                if matches!(ch, Some(b' ') | Some(b'>') | Some(b'/')) {
+                    depth += 1;
+                }
+            }
+            pos += 1;
+        } else {
+            pos += 1;
+        }
+    }
+    None
+}
+
+/// Parse a named attribute value as i64 from a partial XML tag string.
+fn parse_xml_attr(tag: &str, attr_name: &str) -> Option<i64> {
+    let search = format!("{attr_name}=\"");
+    let pos = tag.find(&search)?;
+    let after = &tag[pos + search.len()..];
+    let end = after.find('"')?;
+    after[..end].parse::<i64>().ok()
 }
 
 /// Classify a drawing's type by inspecting its raw XML content.

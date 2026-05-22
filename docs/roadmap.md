@@ -113,11 +113,13 @@ The big rock. Detailed plan in
   - [x] Corrupt test-fixture PNGs replaced — `image-hyperlink.docx`
         and `oversized-header-image.docx` had IDAT CRC mismatches;
         "images vanish" aggregate 2× → 0×.
-  - [ ] **`wordprocessingShape` text boxes** — 3 fixtures
-        (`drawingml-shape`, `wpg-group`, `textbox-test`). `<wps:wsp>`
-        / `<wps:txbx>` shapes have no raster blip; stored as raw XML
-        for round-trip but the layout + PDF writer has no shape
-        rendering path. Main remaining visual gap.
+  - [x] **`wordprocessingShape` text boxes** — `<wps:txbx>` content
+        extracted by the DOCX parser (new `ShapeText` attribute), laid
+        out as `InlineTextBox` runs, rendered in PDF with border
+        rectangle + Helvetica text. `textbox-test.docx` and
+        `wpg-group.docx` now emit text. Remaining gap: pure
+        `prstGeom` rectangle shapes with no text content (1 fixture,
+        `drawingml-shape.docx`).
   - [x] **EMF / WMF transcoding** — `crates/s1-format-pdf/src/emf.rs`
         implements EMF → SVG (geometric primitives, GDI objects,
         path brackets, text, embedded DIBs) rasterised to PNG via

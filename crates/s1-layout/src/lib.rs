@@ -25,7 +25,7 @@ pub use style_resolver::{
     resolve_paragraph_style, resolve_run_style, ResolvedParagraphStyle, ResolvedRunStyle,
 };
 pub use types::{
-    GlyphRun, InlineImage, LayoutAnnotation, LayoutAnnotationType, LayoutBlock, LayoutBlockKind,
-    LayoutBookmark, LayoutCache, LayoutDocument, LayoutLine, LayoutPage, LayoutTableCell,
-    LayoutTableRow, PageLayout, Rect,
+    GlyphRun, InlineImage, InlineTextBox, LayoutAnnotation, LayoutAnnotationType, LayoutBlock,
+    LayoutBlockKind, LayoutBookmark, LayoutCache, LayoutDocument, LayoutLine, LayoutPage,
+    LayoutTableCell, LayoutTableRow, PageLayout, Rect,
 };

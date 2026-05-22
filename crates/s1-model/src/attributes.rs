@@ -411,6 +411,8 @@ pub enum AttributeKey {
     ShapeStrokeWidth,
     /// Raw VML/DrawingML XML for preserving shapes that can't be fully modeled.
     ShapeRawXml,
+    /// Plain-text content of a wordprocessingShape text box (wps:txbx).
+    ShapeText,
 
     /// Comma-separated column widths in points for a table node.
     ///

@@ -1383,6 +1383,7 @@ impl<'a> LayoutEngine<'a> {
                             revision_type: None,
                             revision_author: None,
                             inline_image: None,
+                            inline_text_box: None,
                         });
                     }
                     NodeType::Tab => {
@@ -1466,6 +1467,7 @@ impl<'a> LayoutEngine<'a> {
                             revision_type: None,
                             revision_author: None,
                             inline_image: None,
+                            inline_text_box: None,
                         });
                     }
                     // Bookmark/Comment markers — no visual output, skip silently
@@ -1504,6 +1506,7 @@ impl<'a> LayoutEngine<'a> {
                                 revision_type: None,
                                 revision_author: None,
                                 inline_image: None,
+                                inline_text_box: None,
                             });
                         }
                     }
@@ -1569,6 +1572,69 @@ impl<'a> LayoutEngine<'a> {
                                     None
                                 }
                             });
+
+                        // wordprocessingShape text boxes — render as inline text box
+                        if let Some(shape_text) = img_node
+                            .attributes
+                            .get_string(&AttributeKey::ShapeText)
+                            .map(|s| s.to_string())
+                        {
+                            let box_w = explicit_w.unwrap_or(200.0);
+                            let box_h = explicit_h.unwrap_or(50.0);
+                            let stroke_color = img_node
+                                .attributes
+                                .get_string(&AttributeKey::ShapeStrokeColor)
+                                .map(|s| s.to_string());
+                            let stroke_width = img_node
+                                .attributes
+                                .get(&AttributeKey::ShapeStrokeWidth)
+                                .and_then(|v| {
+                                    if let s1_model::AttributeValue::Float(f) = v {
+                                        Some(*f)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(1.0);
+                            shaped_runs.push(ShapedRunInfo {
+                                source_id: child_id,
+                                font_id: None,
+                                font_family: String::new(),
+                                font_size: box_h,
+                                color: s1_model::Color::new(0, 0, 0),
+                                glyphs: vec![ShapedGlyph {
+                                    glyph_id: 0,
+                                    x_advance: box_w,
+                                    y_advance: 0.0,
+                                    x_offset: 0.0,
+                                    y_offset: 0.0,
+                                    cluster: 0,
+                                }],
+                                is_line_break: false,
+                                metrics: None,
+                                hyperlink_url: None,
+                                text: String::new(),
+                                bold: false,
+                                italic: false,
+                                underline: false,
+                                strikethrough: false,
+                                superscript: false,
+                                subscript: false,
+                                highlight_color: None,
+                                character_spacing: 0.0,
+                                revision_type: None,
+                                revision_author: None,
+                                inline_image: None,
+                                inline_text_box: Some(crate::types::InlineTextBox {
+                                    width: box_w,
+                                    height: box_h,
+                                    text: shape_text,
+                                    stroke_color,
+                                    stroke_width,
+                                }),
+                            });
+                            continue;
+                        }
 
                         // Skip Drawing nodes that have neither a media reference
                         // nor explicit dimensions — they are empty anchor elements
@@ -1652,6 +1718,7 @@ impl<'a> LayoutEngine<'a> {
                                 image_data,
                                 content_type,
                             }),
+                            inline_text_box: None,
                         });
                     }
                     _ => {}
@@ -1888,6 +1955,7 @@ impl<'a> LayoutEngine<'a> {
             revision_type: run_style.revision_type.clone(),
             revision_author: run_style.revision_author.clone(),
             inline_image: None,
+            inline_text_box: None,
         })
     }
 
@@ -1982,6 +2050,7 @@ impl<'a> LayoutEngine<'a> {
                             revision_type: run_style.revision_type.clone(),
                             revision_author: run_style.revision_author.clone(),
                             inline_image: None,
+                            inline_text_box: None,
                         });
                     }
                     NodeType::Tab => {
@@ -2129,6 +2198,7 @@ impl<'a> LayoutEngine<'a> {
             revision_type: run_style.revision_type.clone(),
             revision_author: run_style.revision_author.clone(),
             inline_image: None,
+            inline_text_box: None,
         })
     }
 
@@ -2228,11 +2298,14 @@ impl<'a> LayoutEngine<'a> {
                             revision_type: run_info.revision_type.clone(),
                             revision_author: run_info.revision_author.clone(),
                             inline_image: run_info.inline_image.clone(),
+                            inline_text_box: run_info.inline_text_box.clone(),
                         });
                         current_x += width;
                         // Track image heights separately so line spacing
                         // is NOT applied to inline images (only to text).
-                        if runs[*run_idx].inline_image.is_some() {
+                        if runs[*run_idx].inline_image.is_some()
+                            || runs[*run_idx].inline_text_box.is_some()
+                        {
                             if *height > max_image_height {
                                 max_image_height = *height;
                             }
@@ -2335,8 +2408,11 @@ impl<'a> LayoutEngine<'a> {
                 continue;
             }
 
-            // If the run is an inline image or empty, treat as atomic box
-            if run_info.inline_image.is_some() || run_info.text.is_empty() {
+            // If the run is an inline image, text box, or empty, treat as atomic box
+            if run_info.inline_image.is_some()
+                || run_info.inline_text_box.is_some()
+                || run_info.text.is_empty()
+            {
                 let glyph_advance: f64 = run_info.glyphs.iter().map(|g| g.x_advance).sum();
                 let run_height = run_info
                     .metrics
@@ -3528,6 +3604,7 @@ impl<'a> LayoutEngine<'a> {
                                         revision_type: None,
                                         revision_author: None,
                                         inline_image: None,
+                                        inline_text_box: None,
                                     });
                                 }
                             }
@@ -4125,6 +4202,8 @@ struct ShapedRunInfo {
     revision_author: Option<String>,
     /// Inline image data, if this run represents an inline image.
     inline_image: Option<InlineImage>,
+    /// Inline text box data, if this run represents a wordprocessingShape text box.
+    inline_text_box: Option<crate::types::InlineTextBox>,
 }
 
 /// Compute a content hash for a node and its descendants.

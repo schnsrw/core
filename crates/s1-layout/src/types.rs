@@ -194,6 +194,21 @@ pub struct InlineImage {
     pub content_type: Option<String>,
 }
 
+/// An inline text box (wps:txbx / wordprocessingShape) within a glyph run.
+#[derive(Debug, Clone)]
+pub struct InlineTextBox {
+    /// Box width in points.
+    pub width: f64,
+    /// Box height in points.
+    pub height: f64,
+    /// Plain-text content (paragraphs separated by `\n`).
+    pub text: String,
+    /// Border color as a 6-hex-digit string (no `#`), if present.
+    pub stroke_color: Option<String>,
+    /// Border width in points.
+    pub stroke_width: f64,
+}
+
 /// A contiguous run of glyphs with uniform formatting.
 #[derive(Debug, Clone)]
 pub struct GlyphRun {
@@ -239,6 +254,8 @@ pub struct GlyphRun {
     pub revision_author: Option<String>,
     /// Inline image data, if this run represents an inline image.
     pub inline_image: Option<InlineImage>,
+    /// Inline text box, if this run represents a wordprocessingShape text box.
+    pub inline_text_box: Option<InlineTextBox>,
 }
 
 /// A table row in the layout.

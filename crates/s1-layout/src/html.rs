@@ -353,6 +353,38 @@ fn render_glyph_run(html: &mut String, run: &GlyphRun, line_height: f64) {
         return;
     }
 
+    // If this run is an inline text box, render as a positioned div
+    if let Some(ref tb) = run.inline_text_box {
+        let border_style = if let Some(ref sc) = tb.stroke_color {
+            format!("border:{sw}pt solid #{sc};", sw = fmt_pt(tb.stroke_width))
+        } else {
+            String::new()
+        };
+        let top = (line_height - tb.height).max(0.0);
+        let escaped: String = tb
+            .text
+            .lines()
+            .enumerate()
+            .map(|(i, l)| {
+                if i == 0 {
+                    escape_html(l)
+                } else {
+                    format!("<br/>{}", escape_html(l))
+                }
+            })
+            .collect();
+        html.push_str(&format!(
+            "<div class=\"s1-textbox\" style=\"position:absolute;left:{x}pt;top:{t}pt;width:{w}pt;height:{h}pt;overflow:hidden;box-sizing:border-box;{border}\">{text}</div>",
+            x = fmt_pt(run.x_offset),
+            t = fmt_pt(top),
+            w = fmt_pt(tb.width),
+            h = fmt_pt(tb.height),
+            border = border_style,
+            text = escaped,
+        ));
+        return;
+    }
+
     // Compute baseline-aligned top offset.
     // The line baseline sits at 80% of the line height (matching engine.rs).
     // Each run's ascent is approximately 80% of its font size.
@@ -709,6 +741,7 @@ mod tests {
             revision_type: None,
             revision_author: None,
             inline_image: None,
+            inline_text_box: None,
         };
 
         let line = LayoutLine {
@@ -854,6 +887,7 @@ mod tests {
             revision_type: None,
             revision_author: None,
             inline_image: None,
+            inline_text_box: None,
         };
 
         let line = LayoutLine {
@@ -955,6 +989,7 @@ mod tests {
                         revision_type: None,
                         revision_author: None,
                         inline_image: None,
+                        inline_text_box: None,
                     }],
                 }],
             },
@@ -1079,6 +1114,7 @@ mod tests {
             revision_type: None,
             revision_author: None,
             inline_image: None,
+            inline_text_box: None,
         };
 
         let footer_run = GlyphRun {
@@ -1103,6 +1139,7 @@ mod tests {
             revision_type: None,
             revision_author: None,
             inline_image: None,
+            inline_text_box: None,
         };
 
         let header_block = LayoutBlock {
@@ -1209,6 +1246,7 @@ mod tests {
             revision_type: None,
             revision_author: None,
             inline_image: None,
+            inline_text_box: None,
         };
 
         let line = LayoutLine {
@@ -1339,6 +1377,7 @@ mod tests {
             revision_type: None,
             revision_author: None,
             inline_image: None,
+            inline_text_box: None,
         };
 
         let line = LayoutLine {
@@ -1415,6 +1454,7 @@ mod tests {
             revision_type: None,
             revision_author: None,
             inline_image: None,
+            inline_text_box: None,
         };
 
         let line = LayoutLine {
@@ -1491,6 +1531,7 @@ mod tests {
             revision_type: None,
             revision_author: None,
             inline_image: None,
+            inline_text_box: None,
         };
 
         let line = LayoutLine {
@@ -1567,6 +1608,7 @@ mod tests {
             revision_type: Some("insertion".to_string()),
             revision_author: Some("Author A".to_string()),
             inline_image: None,
+            inline_text_box: None,
         };
 
         let line = LayoutLine {
@@ -1643,6 +1685,7 @@ mod tests {
             revision_type: Some("deletion".to_string()),
             revision_author: Some("Author B".to_string()),
             inline_image: None,
+            inline_text_box: None,
         };
 
         let line = LayoutLine {
@@ -1719,6 +1762,7 @@ mod tests {
             revision_type: None,
             revision_author: None,
             inline_image: None,
+            inline_text_box: None,
         };
 
         let line = LayoutLine {

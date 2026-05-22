@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PDF: all embedded content now decodes correctly — black images and garbled
+  fonts fixed.** `miniz_oxide::deflate::compress_to_vec` produces raw DEFLATE
+  (no zlib wrapper), but PDF's `FlateDecode` filter requires zlib-wrapped
+  DEFLATE (RFC 1950). Both font subsets and decoded image pixels were
+  compressed with the wrong variant, so strict PDF readers (browser viewers on
+  the GitHub Pages demo, Chrome pdfium) failed to decode them — producing
+  black image boxes and scrambled text. Replaced all uses with
+  `compress_to_vec_zlib` which includes the required 2-byte zlib header and
+  Adler-32 trailer. (`crates/s1-format-pdf/src/writer.rs`)
+
+- **PDF: `wordprocessingShape` text boxes now render.** `<wps:wsp>` /
+  `<wps:txbx>` inline text boxes were stored as raw XML for round-trip
+  preservation but silently dropped from the PDF output. The DOCX parser now
+  extracts width, height, stroke color, stroke width, and plain-text content
+  from the raw XML (new `AttributeKey::ShapeText`). The layout engine creates
+  a new `InlineTextBox` run that occupies the correct space in the line.
+  The PDF writer renders the border rectangle (using PDF graphics operators)
+  and the text content (using the Helvetica standard font for reliable ASCII
+  coverage). `textbox-test.docx` went from 13 → 46 `Tj` ops and 0 → 36 vector
+  ops; `wpg-group.docx` from 1 → 6 `Tj`. Aggregate drawing-vanish gap:
+  **3× → 1×** (the remaining gap is a pure `prstGeom` rectangle with no text).
+
 - **PDF: glyph advance widths now correct — character overlap fixed.**
   The CIDFont W (width) array was written as a single consecutive range
   starting at the lowest glyph ID in the document. Because glyph IDs from

@@ -85,6 +85,13 @@ fn write_pdf_internal(
     // Embed images and build the image map (media_id → XObject Ref + resource name)
     let image_map = embed_images(&mut pdf, &mut alloc, layout)?;
 
+    // Allocate a Helvetica Type1 font for text box content rendering.
+    // Standard PDF fonts don't require subsetting or data embedding.
+    let helv_ref = alloc.next();
+    pdf.type1_font(helv_ref)
+        .base_font(Name(b"Helvetica"))
+        .finish();
+
     // Write document metadata
     if let Some(meta) = metadata {
         write_metadata(&mut pdf, &mut alloc, meta);
@@ -112,6 +119,7 @@ fn write_pdf_internal(
             &font_map,
             &image_map,
             &page_annotations,
+            helv_ref,
         )?;
         page_refs.push(page_ref);
     }
@@ -317,23 +325,21 @@ fn embed_fonts(
             // order — deterministic mapping makes debugging easier.
             let mut sorted_for_remap: Vec<u16> = glyph_ids.clone();
             sorted_for_remap.sort();
-            let remapper =
-                subsetter::GlyphRemapper::new_from_glyphs(&sorted_for_remap);
+            let remapper = subsetter::GlyphRemapper::new_from_glyphs(&sorted_for_remap);
 
             // Try to subset the font
             let font_data = font.data();
-            let (subset_data, remap_active) =
-                match subsetter::subset(font_data, 0, &remapper) {
-                    Ok(data) => (data, true),
-                    Err(_e) => {
-                        #[cfg(debug_assertions)]
-                        eprintln!(
-                            "[s1-format-pdf] Warning: font subsetting failed, \
+            let (subset_data, remap_active) = match subsetter::subset(font_data, 0, &remapper) {
+                Ok(data) => (data, true),
+                Err(_e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "[s1-format-pdf] Warning: font subsetting failed, \
                              embedding full font"
-                        );
-                        (font_data.to_vec(), false)
-                    }
-                };
+                    );
+                    (font_data.to_vec(), false)
+                }
+            };
             // Build a lookup table: original glyph ID → new glyph ID.
             // Used to remap glyph IDs in the content stream and W array.
             let glyph_remap: HashMap<u16, u16> = if remap_active {
@@ -349,7 +355,7 @@ fn embed_fonts(
             let upem = font.units_per_em();
 
             // Write the font stream (compressed)
-            let compressed = miniz_oxide::deflate::compress_to_vec(&subset_data, 6);
+            let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&subset_data, 6);
             let mut stream = pdf.stream(data_ref, &compressed);
             stream.filter(pdf_writer::Filter::FlateDecode);
             stream.pair(Name(b"Length1"), subset_data.len() as i32);
@@ -611,7 +617,11 @@ fn collect_and_embed_images(
                                     continue;
                                 }
                             }
-                        } else if ct.contains("emf") || ct.contains("wmf") || is_emf(data) || is_wmf(data) {
+                        } else if ct.contains("emf")
+                            || ct.contains("wmf")
+                            || is_emf(data)
+                            || is_wmf(data)
+                        {
                             match transcode_metafile_to_png(data) {
                                 Some(png) => embed_decoded_image(pdf, xobject_ref, &png),
                                 None => {
@@ -851,7 +861,7 @@ fn embed_decoded_image(pdf: &mut Pdf, xobject_ref: Ref, data: &[u8]) -> Result<(
     let height = rgb.height();
     let raw_pixels = rgb.into_raw();
 
-    let compressed = miniz_oxide::deflate::compress_to_vec(&raw_pixels, 6);
+    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&raw_pixels, 6);
 
     let mut stream = pdf.image_xobject(xobject_ref, &compressed);
     stream.filter(pdf_writer::Filter::FlateDecode);
@@ -881,6 +891,7 @@ fn write_page(
     font_map: &HashMap<FontId, PdfFont>,
     image_map: &HashMap<String, PdfImage>,
     page_annotations: &[&LayoutAnnotation],
+    helv_ref: Ref,
 ) -> Result<Ref, PdfError> {
     let page_ref = alloc.next();
     let content_ref = alloc.next();
@@ -900,6 +911,7 @@ fn write_page(
             font_map,
             image_map,
             &mut hyperlinks,
+            helv_ref,
         );
     }
 
@@ -912,6 +924,7 @@ fn write_page(
             font_map,
             image_map,
             &mut hyperlinks,
+            helv_ref,
         );
     }
     if let Some(ref footer) = page.footer {
@@ -922,6 +935,7 @@ fn write_page(
             font_map,
             image_map,
             &mut hyperlinks,
+            helv_ref,
         );
     }
 
@@ -950,6 +964,7 @@ fn write_page(
                 font_map,
                 image_map,
                 &mut hyperlinks,
+                helv_ref,
             );
         }
     }
@@ -963,6 +978,7 @@ fn write_page(
             font_map,
             image_map,
             &mut hyperlinks,
+            helv_ref,
         );
     }
 
@@ -1098,6 +1114,8 @@ fn write_page(
         for pdf_font in font_map.values() {
             fonts.pair(Name(pdf_font.name.as_bytes()), pdf_font.font_ref);
         }
+        // Helvetica for text box rendering (always present)
+        fonts.pair(Name(b"Helv"), helv_ref);
         fonts.finish();
 
         if !image_map.is_empty() {
@@ -1129,6 +1147,7 @@ fn render_block(
     font_map: &HashMap<FontId, PdfFont>,
     image_map: &HashMap<String, PdfImage>,
     hyperlinks: &mut Vec<HyperlinkAnnotation>,
+    helv_ref: Ref,
 ) {
     match &block.kind {
         LayoutBlockKind::Paragraph {
@@ -1187,6 +1206,7 @@ fn render_block(
                     font_map,
                     image_map,
                     hyperlinks,
+                    helv_ref,
                 );
             }
         }
@@ -1199,6 +1219,7 @@ fn render_block(
                 font_map,
                 image_map,
                 hyperlinks,
+                helv_ref,
             );
         }
         LayoutBlockKind::Image {
@@ -1262,12 +1283,13 @@ fn render_line(
     font_map: &HashMap<FontId, PdfFont>,
     image_map: &HashMap<String, PdfImage>,
     hyperlinks: &mut Vec<HyperlinkAnnotation>,
+    helv_ref: Ref,
 ) {
     // PDF coordinate system: origin at bottom-left, y increases upward
     let pdf_baseline_y = page_height - block_bounds.y - line.baseline_y;
 
     for run in &line.runs {
-        if run.glyphs.is_empty() && run.inline_image.is_none() {
+        if run.glyphs.is_empty() && run.inline_image.is_none() && run.inline_text_box.is_none() {
             continue;
         }
 
@@ -1298,6 +1320,64 @@ fn render_line(
                 content.x_object(Name(pdf_img.name.as_bytes()));
                 content.restore_state();
             }
+            continue;
+        }
+
+        // Handle wordprocessingShape text boxes — render border rectangle + text
+        if let Some(ref tb) = run.inline_text_box {
+            let pdf_x = block_bounds.x + run.x_offset;
+            // Text box top is at the baseline (layout puts box height as font_size);
+            // PDF y-origin is bottom-left, so bottom of box = baseline.
+            let pdf_box_bottom = pdf_baseline_y;
+            let pdf_box_left = pdf_x as f32;
+            let box_w = tb.width as f32;
+            let box_h = tb.height as f32;
+
+            content.save_state();
+            // Draw border if stroke color provided
+            if let Some(ref sc) = tb.stroke_color {
+                if let Some((r, g, b)) = parse_hex_color(sc) {
+                    content.set_stroke_rgb(r, g, b);
+                } else {
+                    content.set_stroke_rgb(0.0, 0.0, 0.0);
+                }
+                content.set_line_width(tb.stroke_width.max(0.5) as f32);
+                content.rect(pdf_box_left, pdf_box_bottom as f32, box_w, box_h);
+                content.stroke();
+            }
+
+            // Render text lines using Helvetica (single-byte encoding, ASCII only)
+            let text_margin = 3.0f32;
+            let font_size = 10.0f32;
+            let line_height = font_size * 1.2;
+            let text_x = pdf_box_left + text_margin;
+            // Start from top of box, going down
+            let mut text_y = pdf_box_bottom as f32 + box_h - font_size - text_margin;
+
+            content.begin_text();
+            content.set_font(Name(b"Helv"), font_size);
+            content.set_fill_rgb(0.0, 0.0, 0.0);
+
+            for para in tb.text.lines() {
+                if text_y < pdf_box_bottom as f32 + text_margin {
+                    break; // clip to box
+                }
+                // Encode as ISO Latin-1 bytes (drop non-ASCII characters)
+                let encoded: Vec<u8> = para
+                    .chars()
+                    .filter(|c| c.is_ascii() && *c != '(' && *c != ')' && *c != '\\')
+                    .map(|c| c as u8)
+                    .collect();
+                if !encoded.is_empty() {
+                    content.next_line(text_x, text_y);
+                    content.show(Str(&encoded));
+                }
+                text_y -= line_height;
+            }
+            content.end_text();
+            content.restore_state();
+            // suppress unused warning
+            let _ = helv_ref;
             continue;
         }
 
@@ -1459,6 +1539,7 @@ fn render_table(
     font_map: &HashMap<FontId, PdfFont>,
     image_map: &HashMap<String, PdfImage>,
     hyperlinks: &mut Vec<HyperlinkAnnotation>,
+    helv_ref: Ref,
 ) {
     for row in rows {
         let _row_pdf_y = page_height - table_bounds.y - row.bounds.y - row.bounds.height;
@@ -1573,6 +1654,7 @@ fn render_table(
                     font_map,
                     image_map,
                     hyperlinks,
+                    helv_ref,
                 );
             }
         }
@@ -1593,6 +1675,7 @@ fn render_block_with_offset(
     font_map: &HashMap<FontId, PdfFont>,
     image_map: &HashMap<String, PdfImage>,
     hyperlinks: &mut Vec<HyperlinkAnnotation>,
+    helv_ref: Ref,
 ) {
     // Create adjusted bounds by adding the offset
     let adjusted_bounds = s1_layout::Rect::new(
@@ -1613,6 +1696,7 @@ fn render_block_with_offset(
                     font_map,
                     image_map,
                     hyperlinks,
+                    helv_ref,
                 );
             }
         }
@@ -1626,6 +1710,7 @@ fn render_block_with_offset(
                 font_map,
                 image_map,
                 hyperlinks,
+                helv_ref,
             );
         }
         LayoutBlockKind::Image {
@@ -1690,6 +1775,19 @@ fn parse_css_border(border: &str) -> (f32, f32, f32, f32) {
         .unwrap_or((0.0, 0.0, 0.0));
 
     (width, r, g, b)
+}
+
+/// Parse a 6-hex-digit color string (no `#`) into `(r, g, b)` floats in [0,1].
+fn parse_hex_color(s: &str) -> Option<(f32, f32, f32)> {
+    let s = s.trim_start_matches('#');
+    if s.len() == 6 {
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        Some((r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0))
+    } else {
+        None
+    }
 }
 
 /// Write PDF document outline (bookmarks).

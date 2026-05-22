@@ -85,9 +85,9 @@ for the live scorecard.
   - **Tables / borders / page geometry** ✅ working.
   - **Header / footer tables** ✅ — table-based headers (logo bars,
     two-column name/date rows) now lay out and render.
-  - **`wordprocessingShape` text boxes** ❌ — 3 fixtures. `<wps:wsp>`
-    / `<wps:txbx>` shapes have no raster path; stored as raw XML for
-    round-trip but not rendered. This is the main remaining visual gap.
+  - **`wordprocessingShape` text boxes** ✅ — `<wps:txbx>` text boxes
+    now render: border rectangle + text via Helvetica. Remaining gap:
+    pure `prstGeom` rectangle shapes with no text content (1 fixture).
   - **EMF / WMF** ✅ — transcoded via EMF→SVG→PNG pipeline; all 13
     drawings in `issue-319-sections.docx` now embed.
 
