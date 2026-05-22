@@ -129,6 +129,7 @@ fn write_pdf_internal(
             &mut alloc,
             &layout.bookmarks,
             &page_refs,
+            &layout.pages,
         ))
     } else {
         None
@@ -166,6 +167,9 @@ struct PdfFont {
     name: String,
     /// Reference to the font object in the PDF.
     font_ref: Ref,
+    /// Maps original (pre-subset) glyph ID → remapped glyph ID in the
+    /// subsetted font. Empty when subsetting is skipped or unavailable.
+    glyph_remap: HashMap<u16, u16>,
 }
 
 /// An image XObject entry in the PDF.
@@ -309,20 +313,36 @@ fn embed_fonts(
         let data_ref = alloc.next();
 
         if let Some(font) = font_db.load_font(*font_id) {
-            // Build a GlyphRemapper for subsetting
-            let remapper = subsetter::GlyphRemapper::new_from_glyphs(glyph_ids);
+            // Sort glyph IDs so the remapper assigns new IDs in ascending
+            // order — deterministic mapping makes debugging easier.
+            let mut sorted_for_remap: Vec<u16> = glyph_ids.clone();
+            sorted_for_remap.sort();
+            let remapper =
+                subsetter::GlyphRemapper::new_from_glyphs(&sorted_for_remap);
 
             // Try to subset the font
             let font_data = font.data();
-            let subset_data = match subsetter::subset(font_data, 0, &remapper) {
-                Ok(data) => data,
-                Err(_e) => {
-                    #[cfg(debug_assertions)]
-                    eprintln!(
-                        "[s1-format-pdf] Warning: font subsetting failed, embedding full font"
-                    );
-                    font_data.to_vec() // Fall back to full font
-                }
+            let (subset_data, remap_active) =
+                match subsetter::subset(font_data, 0, &remapper) {
+                    Ok(data) => (data, true),
+                    Err(_e) => {
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[s1-format-pdf] Warning: font subsetting failed, \
+                             embedding full font"
+                        );
+                        (font_data.to_vec(), false)
+                    }
+                };
+            // Build a lookup table: original glyph ID → new glyph ID.
+            // Used to remap glyph IDs in the content stream and W array.
+            let glyph_remap: HashMap<u16, u16> = if remap_active {
+                sorted_for_remap
+                    .iter()
+                    .filter_map(|&orig| remapper.get(orig).map(|new| (orig, new)))
+                    .collect()
+            } else {
+                HashMap::new()
             };
 
             let metrics = font.metrics(1000.0);
@@ -335,20 +355,24 @@ fn embed_fonts(
             stream.pair(Name(b"Length1"), subset_data.len() as i32);
             stream.finish();
 
-            // Font descriptor
+            // Font descriptor.
+            // metrics(1000.0) returns values already scaled to 1000-unit em
+            // space (the PDF font descriptor coordinate system). Do NOT
+            // further multiply by upem/1000 — that double-scales and produces
+            // values ~2× too large for fonts with upem=2048 (most TrueType).
             let mut descriptor = pdf.font_descriptor(descriptor_ref);
             descriptor.name(Name(font.family_name().as_bytes()));
             descriptor.flags(FontFlags::NON_SYMBOLIC);
             descriptor.bbox(Rect::new(
                 0.0,
-                metrics.descent as f32 * upem as f32 / 1000.0,
+                metrics.descent as f32,
                 1000.0,
-                metrics.ascent as f32 * upem as f32 / 1000.0,
+                metrics.ascent as f32,
             ));
             descriptor.italic_angle(if font.is_italic() { -12.0 } else { 0.0 });
-            descriptor.ascent(metrics.ascent as f32 * upem as f32 / 1000.0);
-            descriptor.descent(metrics.descent as f32 * upem as f32 / 1000.0);
-            descriptor.cap_height(metrics.ascent as f32 * upem as f32 / 1000.0 * 0.7);
+            descriptor.ascent(metrics.ascent as f32);
+            descriptor.descent(metrics.descent as f32);
+            descriptor.cap_height(metrics.ascent as f32 * 0.7);
             descriptor.stem_v(80.0);
             descriptor.font_file2(data_ref);
             descriptor.finish();
@@ -365,30 +389,37 @@ fn embed_fonts(
             cid_font.font_descriptor(descriptor_ref);
             cid_font.default_width(1000.0);
 
-            // Write glyph widths.
-            // Each glyph gets its own single-element consecutive entry so that
-            // gaps between glyph IDs don't corrupt the width table. The old
-            // approach wrote one consecutive range starting at first_gid with
-            // all widths — but glyph IDs from shaping are not necessarily
-            // consecutive, so gaps caused neighbouring glyph IDs to receive
-            // each other's widths, producing character overlap or extra space.
+            // Write glyph widths using the REMAPPED glyph IDs.
+            // The subsetted font assigns new sequential IDs (0=.notdef, 1, 2,
+            // …) so the W array must use remapped IDs, not original ones.
+            // Each glyph gets its own single-element consecutive entry to
+            // avoid width aliasing across non-consecutive ID gaps.
             if !glyph_ids.is_empty() {
-                let mut sorted_gids: Vec<u16> = glyph_ids.clone();
-                sorted_gids.sort();
                 let mut ws = cid_font.widths();
-                for &gid in &sorted_gids {
+                for &orig_gid in &sorted_for_remap {
+                    let pdf_gid = glyph_remap.get(&orig_gid).copied().unwrap_or(orig_gid);
                     let w = font
-                        .glyph_hor_advance(gid)
+                        .glyph_hor_advance(orig_gid)
                         .map(|a| a as f32 * 1000.0 / upem as f32)
                         .unwrap_or(500.0);
-                    ws.consecutive(gid, std::iter::once(w));
+                    ws.consecutive(pdf_gid, std::iter::once(w));
                 }
             }
             cid_font.finish();
 
             // ToUnicode CMap — maps glyph IDs to Unicode code points for
             // correct text extraction / copy-paste from the PDF.
-            let cmap_data = build_tounicode_cmap(&fu.glyph_to_unicode);
+            // Use REMAPPED glyph IDs so the CMap keys match what the content
+            // stream actually emits after remapping.
+            let remapped_cmap: HashMap<u16, String> = fu
+                .glyph_to_unicode
+                .iter()
+                .map(|(&orig, s)| {
+                    let pdf_gid = glyph_remap.get(&orig).copied().unwrap_or(orig);
+                    (pdf_gid, s.clone())
+                })
+                .collect();
+            let cmap_data = build_tounicode_cmap(&remapped_cmap);
             pdf.stream(cmap_ref, &cmap_data);
 
             // Type0 font
@@ -398,20 +429,30 @@ fn embed_fonts(
             type0.descendant_font(cid_ref);
             type0.to_unicode(cmap_ref);
             type0.finish();
+
+            font_map.insert(
+                *font_id,
+                PdfFont {
+                    name: font_name,
+                    font_ref,
+                    glyph_remap,
+                },
+            );
         } else {
             // No font data — write a placeholder standard font
             let mut font_obj = pdf.type1_font(font_ref);
             font_obj.base_font(Name(b"Helvetica"));
             font_obj.finish();
-        }
 
-        font_map.insert(
-            *font_id,
-            PdfFont {
-                name: font_name,
-                font_ref,
-            },
-        );
+            font_map.insert(
+                *font_id,
+                PdfFont {
+                    name: font_name,
+                    font_ref,
+                    glyph_remap: HashMap::new(),
+                },
+            );
+        }
     }
 
     Ok(font_map)
@@ -1333,19 +1374,27 @@ fn render_line(
                 content.next_line(pdf_x as f32, adjusted_baseline_y as f32);
             }
 
-            // Encode glyphs as CID (2 bytes per glyph)
+            // Encode glyphs as CID (2 bytes per glyph), applying the
+            // per-font glyph ID remapping so the content stream references
+            // the new IDs assigned by the font subsetter.
             let encoded: Vec<u8> = run
                 .glyphs
                 .iter()
-                .flat_map(|g| [(g.glyph_id >> 8) as u8, (g.glyph_id & 0xFF) as u8])
+                .flat_map(|g| {
+                    let pdf_gid = pdf_font
+                        .glyph_remap
+                        .get(&g.glyph_id)
+                        .copied()
+                        .unwrap_or(g.glyph_id);
+                    [(pdf_gid >> 8) as u8, (pdf_gid & 0xFF) as u8]
+                })
                 .collect();
 
             content.show(Str(&encoded));
 
-            // Reset text rendering mode after bold run
-            if run.bold {
-                content.set_text_rendering_mode(TextRenderingMode::Fill);
-            }
+            // Always reset text rendering mode and stroke state so that
+            // bold/non-bold transitions don't bleed into the next run.
+            content.set_text_rendering_mode(TextRenderingMode::Fill);
 
             content.end_text();
 
@@ -1649,6 +1698,7 @@ fn write_outline(
     alloc: &mut RefAllocator,
     bookmarks: &[LayoutBookmark],
     page_refs: &[Ref],
+    pages: &[s1_layout::LayoutPage],
 ) -> Ref {
     let outline_ref = alloc.next();
 
@@ -1674,8 +1724,13 @@ fn write_outline(
             .copied()
             .unwrap_or(page_refs[0]);
 
-        // PDF y: convert from top-origin to bottom-origin
-        let pdf_y = 792.0 - bookmark.y_position; // Default letter height
+        // PDF y: convert from top-origin (layout) to bottom-origin (PDF).
+        // Use the actual page height rather than the letter-size fallback.
+        let page_height = pages
+            .get(bookmark.page_index)
+            .map(|p| p.height)
+            .unwrap_or(792.0);
+        let pdf_y = page_height - bookmark.y_position;
 
         let mut entry = pdf.outline_item(entry_ref);
         entry.parent(outline_ref);
