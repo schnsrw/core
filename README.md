@@ -90,6 +90,10 @@ for the live scorecard.
     pure `prstGeom` rectangle shapes with no text content (1 fixture).
   - **EMF / WMF** ✅ — transcoded via EMF→SVG→PNG pipeline; all 13
     drawings in `issue-319-sections.docx` now embed.
+  - **Embedded fonts** ✅ — `.odttf` fonts from `word/fonts/` are
+    de-obfuscated (ECMA-376 §9.7.3.3 XOR key) and loaded into the font
+    database before layout. Documents using Ubuntu, custom corporate
+    fonts, etc., now render with correct metrics.
 
   Live numbers in [`docs/pdf-coverage.md`](docs/pdf-coverage.md);
   roadmap tracking in [`docs/roadmap.md`](docs/roadmap.md).

@@ -126,6 +126,16 @@ The big rock. Detailed plan in
         `resvg`. `issue-319-sections.docx` went 0 → **13** `Do` ops;
         all 13 EMF drawings now embed. Both block-level and inline
         image paths route through the transcoder.
+  - [x] **Embedded DOCX font loading** — `extract_embedded_fonts` in
+        `s1-format-docx` reads `word/fontTable.xml`, follows
+        `word/_rels/fontTable.xml.rels`, extracts each `word/fonts/*.odttf`
+        binary, and XOR-deobfuscates using the `w:fontKey` GUID (reversed
+        byte order, ECMA-376 §9.7.3.3). Bytes loaded into `FontDatabase`
+        before PDF layout. Ubuntu, corporate, and other embedded fonts now
+        render with correct metrics instead of falling back to Times New
+        Roman. `Font::family_name()` bug fixed: Mac-platform name records
+        (which ttf_parser can't decode) no longer shadow Windows-Unicode
+        records that decode correctly.
 
 ## Then — `v0.3.x` — performance + hostile input
 

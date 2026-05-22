@@ -957,3 +957,39 @@ fn large_document_open_performance() {
         );
     }
 }
+
+#[cfg(all(feature = "pdf", feature = "docx"))]
+#[test]
+fn embedded_fonts_load_into_db() {
+    let docx = match std::fs::read("../../testdocs/docx/eigenpal/demo.docx") {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let pkg = s1_ooxml::Package::parse(&docx).unwrap();
+    let fonts = s1_format_docx::extract_embedded_fonts(&pkg);
+    assert!(!fonts.is_empty(), "demo.docx has embedded fonts");
+
+    let mut db = s1_text::FontDatabase::new();
+    let before = db.len();
+    for bytes in fonts {
+        db.load_font_data(bytes);
+    }
+    let after = db.len();
+    assert!(after > before, "DB should grow: was {before}, now {after}");
+
+    let ubuntu = db.find("Ubuntu", false, false);
+    assert!(
+        ubuntu.is_some(),
+        "Ubuntu Regular should be found (before={before} after={after})"
+    );
+
+    if let Some(id) = ubuntu {
+        if let Some(font) = db.load_font(id) {
+            let name = font.family_name();
+            assert_ne!(
+                name, "Unknown",
+                "Ubuntu family_name should not be 'Unknown'"
+            );
+        }
+    }
+}

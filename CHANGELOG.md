@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PDF: embedded DOCX fonts now loaded — Ubuntu and other non-system fonts
+  render correctly.** `export(Format::Pdf)` now extracts `.odttf` font files
+  from the DOCX preservation package, XOR-deobfuscates each one using the
+  `w:fontKey` GUID from `word/fontTable.xml` (reversed byte order per
+  ECMA-376 §9.7.3.3), and loads the raw TTF bytes into the `FontDatabase`
+  before layout. Documents with embedded fonts (e.g., the calibre `demo.docx`
+  which embeds Ubuntu Regular/Bold/Italic/BoldItalic and Ubuntu Mono) now use
+  the correct font metrics instead of falling back to Times New Roman.
+  (`crates/s1-format-docx/src/reader.rs` — new `extract_embedded_fonts`;
+  `crates/s1engine/src/document.rs` — loads them in the PDF export path)
+
+- **Layout: `Font::family_name()` now correctly decodes Mac-platform name
+  records.** `ttf_parser::Name::to_string()` only handles Unicode-encoded
+  records (Windows platform + Unicode BMP). Many fonts (including Ubuntu)
+  list their Mac-platform FAMILY name first; the previous `find()` +
+  `and_then(to_string)` pattern took that first record and got `None`,
+  falling through to "Unknown". Fixed by scanning all records for each target
+  name ID and taking the first that decodes successfully.
+  (`crates/s1-text/src/font.rs`)
+
 - **PDF: all embedded content now decodes correctly — black images and garbled
   fonts fixed.** `miniz_oxide::deflate::compress_to_vec` produces raw DEFLATE
   (no zlib wrapper), but PDF's `FlateDecode` filter requires zlib-wrapped

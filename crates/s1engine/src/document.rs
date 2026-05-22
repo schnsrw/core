@@ -874,7 +874,16 @@ impl Document {
                 // tables" symptom the previous `FontDatabase::empty()`
                 // produced). Advanced callers can still hand in a
                 // custom DB via the public `export_pdf(&font_db)` API.
-                let font_db = s1_text::FontDatabase::new();
+                let mut font_db = s1_text::FontDatabase::new();
+                // Load fonts embedded in the source DOCX (.odttf de-obfuscated)
+                // so that documents using non-system fonts (e.g. Ubuntu) render
+                // with correct metrics instead of falling back to Times New Roman.
+                #[cfg(feature = "docx")]
+                if let Some(pkg) = &self.preservation {
+                    for font_bytes in s1_format_docx::extract_embedded_fonts(pkg) {
+                        font_db.load_font_data(font_bytes);
+                    }
+                }
                 self.export_pdf(&font_db)
             }
             #[cfg(feature = "convert")]

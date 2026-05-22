@@ -55,18 +55,27 @@ impl Font {
 
     /// Get the font family name.
     pub fn family_name(&self) -> String {
-        self.face
-            .names()
-            .into_iter()
-            .find(|name| name.name_id == ttf_parser::name_id::TYPOGRAPHIC_FAMILY)
-            .or_else(|| {
-                self.face
-                    .names()
-                    .into_iter()
-                    .find(|name| name.name_id == ttf_parser::name_id::FAMILY)
-            })
-            .and_then(|name| name.to_string())
-            .unwrap_or_else(|| "Unknown".to_string())
+        // ttf_parser::Name::to_string() only decodes Unicode-encoded records
+        // (Windows platform with Unicode BMP encoding, or Unicode platform).
+        // Mac Roman records (platform 1) return None. We therefore scan all
+        // records for each target name ID and take the first one that decodes
+        // successfully, which avoids falling through to "Unknown" on fonts
+        // (like Ubuntu) whose first FAMILY record uses Mac platform encoding.
+        for target_id in [
+            ttf_parser::name_id::TYPOGRAPHIC_FAMILY,
+            ttf_parser::name_id::FAMILY,
+        ] {
+            if let Some(name) = self
+                .face
+                .names()
+                .into_iter()
+                .filter(|n| n.name_id == target_id)
+                .find_map(|n| n.to_string())
+            {
+                return name;
+            }
+        }
+        "Unknown".to_string()
     }
 
     /// Get the font style name (e.g., "Regular", "Bold", "Italic").

@@ -44,5 +44,5 @@ pub mod xml_writer;
 // Re-export primary types at crate root.
 pub use body_origin::BodyOrigin;
 pub use error::DocxError;
-pub use reader::{read, read_with_package, read_with_package_and_origin};
+pub use reader::{extract_embedded_fonts, read, read_with_package, read_with_package_and_origin};
 pub use writer::write;

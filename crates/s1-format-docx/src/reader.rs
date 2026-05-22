@@ -274,6 +274,150 @@ fn read_model_internal(input: &[u8]) -> Result<DocumentModel, DocxError> {
     Ok(doc)
 }
 
+// ---------------------------------------------------------------------------
+// Embedded font extraction (ODTTF de-obfuscation)
+// ---------------------------------------------------------------------------
+
+/// Extract and deobfuscate embedded fonts from a DOCX OOXML package.
+///
+/// Reads `word/fontTable.xml`, follows each `w:embedRegular` / `w:embedBold` /
+/// `w:embedItalic` / `w:embedBoldItalic` relationship to the corresponding
+/// `word/fonts/*.odttf` binary part, XOR-deobfuscates the first 32 bytes with
+/// the key from `w:fontKey`, and returns the resulting raw TTF/OTF bytes.
+///
+/// Callers load the returned bytes into a `FontDatabase` before PDF layout so
+/// the document's embedded fonts are used instead of system fallbacks.
+pub fn extract_embedded_fonts(pkg: &s1_ooxml::Package) -> Vec<Vec<u8>> {
+    let mut result = Vec::new();
+
+    // Step 1 — get fontTable.xml as parsed XML tree.
+    let font_table_tree = match pkg.parts.get("word/fontTable.xml") {
+        Some(part) => match &part.content {
+            s1_ooxml::PartContent::Xml(tree) => tree,
+            _ => return result,
+        },
+        None => return result,
+    };
+
+    // Step 2 — collect (r:id, fontKey) pairs from embed elements.
+    let embed_entries = collect_embed_entries(font_table_tree);
+    if embed_entries.is_empty() {
+        return result;
+    }
+
+    // Step 3 — build rId → target path map from fontTable.xml.rels.
+    let rels_key = "word/_rels/fontTable.xml.rels";
+    let id_to_target: HashMap<String, String> = pkg
+        .relationships
+        .get(rels_key)
+        .map(|rels| {
+            rels.entries
+                .iter()
+                .map(|r| (r.id.clone(), r.target.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Step 4 — for each embed entry, extract binary, deobfuscate, collect.
+    for entry in &embed_entries {
+        let Some(target) = id_to_target.get(&entry.r_id) else {
+            continue;
+        };
+        // target is relative to word/, e.g. "fonts/font1.odttf"
+        let part_path = format!("word/{target}");
+        let Some(part) = pkg.parts.get(&part_path) else {
+            continue;
+        };
+        let font_bytes = match &part.content {
+            s1_ooxml::PartContent::Binary(b) => b,
+            _ => continue,
+        };
+        let decoded = if target.ends_with(".odttf") {
+            deobfuscate_odttf(font_bytes, &entry.font_key)
+        } else {
+            font_bytes.clone()
+        };
+        result.push(decoded);
+    }
+
+    result
+}
+
+struct EmbedEntry {
+    r_id: String,
+    font_key: String,
+}
+
+/// Walk the fontTable.xml tree and collect (r:id, w:fontKey) from all embed
+/// elements (embedRegular, embedBold, embedItalic, embedBoldItalic).
+fn collect_embed_entries(tree: &s1_ooxml::XmlTree) -> Vec<EmbedEntry> {
+    const EMBED_TAGS: &[&str] = &[
+        "embedRegular",
+        "embedBold",
+        "embedItalic",
+        "embedBoldItalic",
+    ];
+    let mut entries = Vec::new();
+
+    for child in &tree.root.children {
+        let s1_ooxml::XmlNode::Element(font_el) = child else {
+            continue;
+        };
+        if font_el.name.local_name != "font" {
+            continue;
+        }
+        for font_child in &font_el.children {
+            let s1_ooxml::XmlNode::Element(embed_el) = font_child else {
+                continue;
+            };
+            if !EMBED_TAGS.contains(&embed_el.name.local_name.as_str()) {
+                continue;
+            }
+            let mut r_id = String::new();
+            let mut font_key = String::new();
+            for attr in &embed_el.attributes {
+                match attr.name.local_name.as_str() {
+                    "id" => r_id = attr.value.clone(),
+                    "fontKey" => font_key = attr.value.clone(),
+                    _ => {}
+                }
+            }
+            if !r_id.is_empty() && !font_key.is_empty() {
+                entries.push(EmbedEntry { r_id, font_key });
+            }
+        }
+    }
+
+    entries
+}
+
+/// XOR-deobfuscate an ODTTF font (ECMA-376 §9.7.3.3).
+///
+/// The `guid_str` is the `w:fontKey` attribute value, e.g.
+/// `"{3EEE3167-E5B8-4798-AE48-EA6B71E31D4D}"`. Strip delimiters, decode 16
+/// bytes in **reverse** order (the spec applies the key from last byte to
+/// first), XOR the first 32 bytes of the font data with the reversed key
+/// (repeated twice) to recover the original TTF/OTF bytes.
+fn deobfuscate_odttf(font_data: &[u8], guid_str: &str) -> Vec<u8> {
+    let hex: String = guid_str.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    let mut key: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect();
+
+    if key.len() != 16 {
+        return font_data.to_vec();
+    }
+
+    key.reverse();
+
+    let mut result = font_data.to_vec();
+    for (i, byte) in result.iter_mut().enumerate().take(32) {
+        *byte ^= key[i % 16];
+    }
+    result
+}
+
 /// Read a file from the ZIP archive as a UTF-8 string.
 /// Maximum decompressed size for a single ZIP entry (256 MB).
 const MAX_ZIP_ENTRY_SIZE: u64 = 256 * 1024 * 1024;
