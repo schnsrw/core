@@ -29,6 +29,7 @@ pub fn read(input: &str) -> Result<DocumentModel, MdError> {
         strikethrough: false,
         code: false,
         link_url: None,
+        link_title: None,
         list_stack: Vec::new(),
         numbering_counter: 0,
         in_table: false,
@@ -59,6 +60,7 @@ struct ReadContext {
     strikethrough: bool,
     code: bool,
     link_url: Option<String>,
+    link_title: Option<String>,
     list_stack: Vec<ListState>,
     numbering_counter: u32,
     in_table: bool,
@@ -169,8 +171,15 @@ fn process_event(
                 ctx.code = true;
                 ctx.in_code_block = true;
             }
-            Tag::Link { dest_url, .. } => {
+            Tag::Link {
+                dest_url, title, ..
+            } => {
                 ctx.link_url = Some(dest_url.to_string());
+                ctx.link_title = if title.is_empty() {
+                    None
+                } else {
+                    Some(title.to_string())
+                };
             }
             Tag::Image {
                 dest_url, title, ..
@@ -340,6 +349,7 @@ fn process_event(
             }
             TagEnd::Link => {
                 ctx.link_url = None;
+                ctx.link_title = None;
             }
             TagEnd::Image => {}
             TagEnd::List(_) => {
@@ -447,6 +457,12 @@ fn emit_text(doc: &mut DocumentModel, ctx: &mut ReadContext, text: &str) -> Resu
             AttributeKey::HyperlinkUrl,
             AttributeValue::String(url.clone()),
         );
+        if let Some(ref title) = ctx.link_title {
+            run.attributes.set(
+                AttributeKey::HyperlinkTooltip,
+                AttributeValue::String(title.clone()),
+            );
+        }
     }
 
     doc.insert_node(parent_id, child_idx, run)

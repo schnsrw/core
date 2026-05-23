@@ -231,6 +231,7 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
             strike: bool,
             code: bool,
             url: Option<&'a str>,
+            title: Option<&'a str>,
         },
         LineBreak,
         Image {
@@ -271,6 +272,7 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
                     .map(|f| f == "monospace")
                     .unwrap_or(false);
                 let url = n.attributes.get_string(&AttributeKey::HyperlinkUrl);
+                let title = n.attributes.get_string(&AttributeKey::HyperlinkTooltip);
                 let mut text = String::new();
                 for &cid in &n.children {
                     write_inline_text(doc, cid, &mut text);
@@ -285,6 +287,7 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
                     strike,
                     code,
                     url,
+                    title,
                 });
             }
             _ => items.push(Inline::Other),
@@ -379,23 +382,47 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
                 strike,
                 code,
                 url,
+                title,
             } => {
                 if url.is_some() || *code {
                     close_all(&mut stack, out);
                     if let Some(href) = url {
-                        if *code {
+                        // Autolink: text equals URL (mailto: stripped) and no
+                        // title — emit `<url>` instead of `[url](url)`.
+                        let is_autolink = title.is_none()
+                            && !*code
+                            && !*bold
+                            && !*italic
+                            && !*strike
+                            && (*text == *href
+                                || (href.starts_with("mailto:") && href[7..] == **text));
+                        if is_autolink {
+                            out.push('<');
+                            out.push_str(text);
+                            out.push('>');
+                        } else if *code {
                             out.push('[');
                             out.push('`');
                             out.push_str(text);
                             out.push('`');
                             out.push_str("](");
                             out.push_str(href);
+                            if let Some(t) = title {
+                                out.push_str(" \"");
+                                out.push_str(t);
+                                out.push('"');
+                            }
                             out.push(')');
                         } else {
                             out.push('[');
                             push_formatted(out, text, *bold, *italic, *strike);
                             out.push_str("](");
                             out.push_str(href);
+                            if let Some(t) = title {
+                                out.push_str(" \"");
+                                out.push_str(t);
+                                out.push('"');
+                            }
                             out.push(')');
                         }
                     } else {

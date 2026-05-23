@@ -301,11 +301,21 @@ fn write_paragraph(
                         break;
                     }
 
+                    // Tooltip carried alongside the URL on the same run.
+                    let tooltip = child
+                        .attributes
+                        .get_string(&AttributeKey::HyperlinkTooltip)
+                        .map(str::to_string);
+                    let tooltip_attr = tooltip
+                        .as_ref()
+                        .map(|t| format!(r#" w:tooltip="{}""#, escape_xml(t)))
+                        .unwrap_or_default();
+
                     // Write hyperlink wrapper
                     if let Some(anchor) = url.strip_prefix('#') {
                         // Internal anchor
                         xml.push_str(&format!(
-                            r#"<w:hyperlink w:anchor="{}">"#,
+                            r#"<w:hyperlink w:anchor="{}"{tooltip_attr}>"#,
                             escape_xml(anchor)
                         ));
                     } else {
@@ -315,7 +325,7 @@ fn write_paragraph(
                             rid: rid.clone(),
                             target: url.clone(),
                         });
-                        xml.push_str(&format!(r#"<w:hyperlink r:id="{rid}">"#));
+                        xml.push_str(&format!(r#"<w:hyperlink r:id="{rid}"{tooltip_attr}>"#));
                     }
                     for &run_id in &children[hyp_start..i] {
                         write_run(doc, run_id, xml);
