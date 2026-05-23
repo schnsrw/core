@@ -1197,6 +1197,100 @@ fn cross_format_fidelity_audit() {
     }
 }
 
+/// Diagnostic: round-trip every Markdown fixture through DOCX and report
+/// per-fixture word-survival. Catches regressions where formatting changes
+/// silently drop content.
+#[test]
+fn md_through_docx_fidelity_audit() {
+    use s1engine::{Engine, Format};
+
+    let dir = workspace_path("testdocs/md/samples");
+    let mut entries: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |e| e == "md"))
+            .collect(),
+        Err(_) => return,
+    };
+    entries.sort();
+
+    eprintln!("\n=== Markdown → DOCX → Markdown ===");
+    let engine = Engine::new();
+    let mut total_words_orig = 0usize;
+    let mut total_words_matched = 0usize;
+    let mut fixture_count = 0usize;
+
+    for path in &entries {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let original = match std::str::from_utf8(&bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => continue,
+        };
+        let doc = match engine.open_as(&bytes, Format::Md) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let docx_bytes = match doc.export(Format::Docx) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let doc2 = match engine.open(&docx_bytes) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let round = match doc2.export_string(Format::Md) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        // Word-multiset survival — counts how many words from the original
+        // appear in the round-trip output (order-independent). Catches actual
+        // content loss without flagging line-wrap or marker normalization.
+        use std::collections::HashMap;
+        let orig_words: Vec<&str> = original.split_whitespace().collect();
+        let round_words: Vec<&str> = round.split_whitespace().collect();
+        let mut round_counts: HashMap<&str, usize> = HashMap::new();
+        for w in &round_words {
+            *round_counts.entry(*w).or_insert(0) += 1;
+        }
+        let mut matches = 0usize;
+        for w in &orig_words {
+            if let Some(c) = round_counts.get_mut(w) {
+                if *c > 0 {
+                    *c -= 1;
+                    matches += 1;
+                }
+            }
+        }
+        let survival = if orig_words.is_empty() {
+            100.0
+        } else {
+            matches as f64 / orig_words.len() as f64 * 100.0
+        };
+        let fname = path.file_name().unwrap().to_str().unwrap_or("");
+        eprintln!(
+            "  {fname}: {}/{} words preserved ({:.0}% survive)",
+            matches,
+            orig_words.len(),
+            survival
+        );
+        total_words_orig += orig_words.len();
+        total_words_matched += matches;
+        fixture_count += 1;
+    }
+
+    if fixture_count > 0 {
+        let overall = total_words_matched as f64 / total_words_orig as f64 * 100.0;
+        eprintln!(
+            "\nMD→DOCX→MD summary: {fixture_count} fixtures, {total_words_matched}/{total_words_orig} words preserved ({overall:.1}% word survival)"
+        );
+    }
+}
+
 #[cfg(all(feature = "pdf", feature = "docx"))]
 #[test]
 fn embedded_fonts_load_into_db() {
