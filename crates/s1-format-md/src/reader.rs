@@ -17,7 +17,10 @@ pub fn read(input: &str) -> Result<DocumentModel, MdError> {
         .body_id()
         .ok_or_else(|| MdError::Model("no body".into()))?;
 
-    let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
+    let opts = Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES;
     let parser = Parser::new_ext(input, opts);
 
     let mut ctx = ReadContext {
@@ -248,6 +251,32 @@ fn process_event(
                     .push((ctx.body_id, ctx.body_child_index));
                 ctx.blockquote_depth += 1;
             }
+            Tag::FootnoteDefinition(label) => {
+                // Emit the definition as a paragraph whose first text run is
+                // `[^label]: `. This keeps the markdown source round-tripping
+                // even though we don't model footnotes structurally.
+                let para_id = doc.next_id();
+                insert_node(
+                    doc,
+                    ctx.body_id,
+                    ctx.body_child_index,
+                    para_id,
+                    NodeType::Paragraph,
+                )?;
+                ctx.body_child_index += 1;
+                ctx.container_stack.push((para_id, 0));
+
+                // Prepend the marker as a regular run so it survives DOCX.
+                let run_id = doc.next_id();
+                doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
+                    .map_err(|e| MdError::Model(e.to_string()))?;
+                let text_id = doc.next_id();
+                doc.insert_node(run_id, 0, Node::text(text_id, format!("[^{label}]: ")))
+                    .map_err(|e| MdError::Model(e.to_string()))?;
+                if let Some(last) = ctx.container_stack.last_mut() {
+                    last.1 += 1;
+                }
+            }
             Tag::Table(alignments) => {
                 let table_id = doc.next_id();
                 insert_node(
@@ -364,6 +393,9 @@ fn process_event(
                     ctx.blockquote_depth -= 1;
                 }
             }
+            TagEnd::FootnoteDefinition => {
+                ctx.container_stack.pop();
+            }
             TagEnd::Table => {
                 ctx.in_table = false;
                 ctx.table_id = None;
@@ -379,6 +411,20 @@ fn process_event(
 
         Event::Text(text) => {
             emit_text(doc, ctx, &text)?;
+        }
+
+        Event::TaskListMarker(checked) => {
+            let marker = if checked { "[x] " } else { "[ ] " };
+            emit_text(doc, ctx, marker)?;
+        }
+
+        Event::FootnoteReference(label) => {
+            // pulldown-cmark consumes "[^label]" references; emit them back
+            // as literal text so they survive the round-trip. We don't model
+            // footnotes structurally in MD — DOCX's footnoteReference would
+            // be the place to wire them in but that's a deeper change.
+            let marker = format!("[^{label}]");
+            emit_text(doc, ctx, &marker)?;
         }
 
         Event::Code(code) => {
