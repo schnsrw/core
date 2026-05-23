@@ -54,6 +54,36 @@ fn heading_level(style_id: &str) -> Option<u8> {
     style_id.strip_prefix("Heading")?.parse::<u8>().ok()
 }
 
+/// Emit an inline code span using enough backticks to avoid collision with
+/// any backtick runs inside `text`. CommonMark §6.1: the fence is N backticks
+/// where N is one more than the longest run inside the content; if the content
+/// starts or ends with a backtick we pad with a space.
+fn write_inline_code(out: &mut String, text: &str) {
+    let mut max_run = 0usize;
+    let mut cur = 0usize;
+    for ch in text.chars() {
+        if ch == '`' {
+            cur += 1;
+            if cur > max_run {
+                max_run = cur;
+            }
+        } else {
+            cur = 0;
+        }
+    }
+    let fence: String = "`".repeat(max_run + 1);
+    let pad = text.starts_with('`') || text.ends_with('`');
+    out.push_str(&fence);
+    if pad {
+        out.push(' ');
+    }
+    out.push_str(text);
+    if pad {
+        out.push(' ');
+    }
+    out.push_str(&fence);
+}
+
 /// Write a block-level node.
 fn write_block(
     doc: &DocumentModel,
@@ -402,9 +432,7 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
                             out.push('>');
                         } else if *code {
                             out.push('[');
-                            out.push('`');
-                            out.push_str(text);
-                            out.push('`');
+                            write_inline_code(out, text);
                             out.push_str("](");
                             out.push_str(href);
                             if let Some(t) = title {
@@ -426,9 +454,7 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
                             out.push(')');
                         }
                     } else {
-                        out.push('`');
-                        out.push_str(text);
-                        out.push('`');
+                        write_inline_code(out, text);
                     }
                     continue;
                 }
