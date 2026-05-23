@@ -1,6 +1,6 @@
 {
   "name": "@schnsrw/core",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Casual Core — WASM-powered document converter for DOCX, ODT, PDF, MD, TXT (part of Casual Office)",
   "type": "module",
   "main": "./dist/index.cjs",

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-23
+
+First release with the structured-model API surface. Highlights:
+
+- **New JS surface** — `openToModel` / `convertModel` (Phase B + C)
+  expose the typed document model as JSON, write it back to any
+  supported format.
+- **Cross-format fidelity overhauled** — DOCX → ODT → DOCX from 53.5 %
+  to **98.2 %** raw tag survival; ODT → DOCX → ODT from 31.7 % to
+  **56.1 %**.
+- **Markdown coverage near-complete** — fenced code blocks with
+  language hint, GFM tables with column alignment + inline cell
+  formatting, blockquotes (nested), task lists, footnotes, autolinks +
+  titles, HTML pass-through, span-aware nested emphasis, smart inline
+  code fences. MD → DOCX → MD word survival sits at **96.1 %**.
+- **Release pipeline** — `release.yml` now publishes `@schnsrw/core`
+  to npm with provenance on every `vX.Y.Z` tag.
+
 ### Added
 
 - **WASM Phase B + C — JSON model surface.** `openToModel`,
