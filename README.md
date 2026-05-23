@@ -141,10 +141,11 @@ Per-construct survival across the test corpus
 Tag survival when converting through an intermediate format
 ([`real_world.rs::cross_format_fidelity_audit`](crates/s1engine/tests/real_world.rs)):
 
-| Path                  | Fixtures | Tag survival |
+| Path                  | Fixtures | Survival     |
 | :-------------------- | -------: | -----------: |
-| DOCX → ODT → DOCX     |       34 |  **98.2 %** |
-| ODT  → DOCX → ODT     |        3 |  **56.1 %** |
+| DOCX → ODT → DOCX     |       34 |  **98.2 %**  (raw tag count) |
+| ODT  → DOCX → ODT     |        3 |  **56.1 %**  (raw tag count) |
+| Markdown → DOCX → MD  |        8 |  **95.9 %**  (word multiset)  |
 
 The ODT → DOCX → ODT figure is dominated by source files that emit one named
 auto-style per paragraph; Casual Core deduplicates them to the unique property
