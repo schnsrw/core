@@ -1,4 +1,4 @@
-import { init, convert, detectFormat } from "@schnsrw/core";
+import { init, convert, detectFormat, openToModel } from "@schnsrw/core";
 import type { Format } from "@schnsrw/core";
 
 const fileInput = qs<HTMLInputElement>("#file");
@@ -7,7 +7,10 @@ const controls = qs<HTMLDivElement>("#controls");
 const detectedEl = qs<HTMLElement>("#detected");
 const targetSel = qs<HTMLSelectElement>("#target");
 const convertBtn = qs<HTMLButtonElement>("#convert");
+const viewModelBtn = qs<HTMLButtonElement>("#view-model");
 const statusEl = qs<HTMLOutputElement>("#status");
+const modelOut = qs<HTMLDetailsElement>("#model-out");
+const modelPre = qs<HTMLPreElement>("#model-pre");
 
 let currentBytes: Uint8Array | null = null;
 let currentFormat: Format | null = null;
@@ -29,6 +32,7 @@ fileInput.addEventListener("change", () => {
   if (file) void handleFile(file);
 });
 convertBtn.addEventListener("click", () => void runConvert());
+viewModelBtn.addEventListener("click", () => void showModel());
 
 async function handleFile(file: File) {
   setStatus(`Loading ${file.name}…`);
@@ -57,6 +61,25 @@ async function runConvert() {
     setStatus(err instanceof Error ? err.message : String(err), true);
   } finally {
     convertBtn.disabled = false;
+  }
+}
+
+async function showModel() {
+  if (!currentBytes || !currentFormat) return;
+  viewModelBtn.disabled = true;
+  setStatus(`Parsing ${currentFormat} into model…`);
+  try {
+    await init();
+    const model = await openToModel(currentBytes, currentFormat);
+    modelPre.textContent = JSON.stringify(model, null, 2);
+    modelOut.hidden = false;
+    modelOut.open = true;
+    const count = Object.keys(model.nodes).length;
+    setStatus(`Loaded ${count} nodes.`);
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : String(err), true);
+  } finally {
+    viewModelBtn.disabled = false;
   }
 }
 

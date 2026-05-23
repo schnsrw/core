@@ -29,7 +29,8 @@ behind one **typed document model** and one **minimal API**, so you can:
 - **Surface a structured model** to a custom editor without parsing XML yourself.
 - **Round-trip without loss** for the constructs your users actually edit (paragraphs,
   styles, tables, images, headers, lists).
-- **Stay light**: ~900 KB gzipped WASM bundle, framework-free TypeScript wrapper, zero
+- **Stay self-contained**: a single ~3.3 MB gzipped WASM bundle covers every
+  format. Framework-free TypeScript wrapper, zero
   runtime dependencies in the core model.
 
 It powers the [Casual Office](https://schnsrw.live) suite (a collaborative editor and

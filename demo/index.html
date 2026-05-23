@@ -44,10 +44,18 @@
               <option value="txt">Plain text</option>
             </select>
           </div>
-          <button id="convert" type="button">Convert</button>
+          <div class="row buttons">
+            <button id="convert" type="button">Convert</button>
+            <button id="view-model" type="button">View JSON model</button>
+          </div>
         </div>
 
         <output id="status" aria-live="polite"></output>
+
+        <details id="model-out" hidden>
+          <summary>Document model</summary>
+          <pre id="model-pre"></pre>
+        </details>
       </section>
 
       <footer>

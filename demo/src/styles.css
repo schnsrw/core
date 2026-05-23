@@ -118,6 +118,41 @@ output {
 }
 output.error { color: #dc2626; }
 
+.row.buttons {
+  gap: 0.5rem;
+}
+.row.buttons button {
+  flex: 0 0 auto;
+}
+#view-model {
+  background: transparent;
+  color: var(--fg);
+  border-color: currentColor;
+}
+
+#model-out {
+  margin-top: 1rem;
+}
+#model-out summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+#model-pre {
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+@media (prefers-color-scheme: dark) {
+  #model-pre { background: rgba(255, 255, 255, 0.05); }
+}
+
 footer {
   margin-top: 3rem;
   color: var(--muted);
