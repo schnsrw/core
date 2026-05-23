@@ -875,6 +875,12 @@ impl Document {
                 // produced). Advanced callers can still hand in a
                 // custom DB via the public `export_pdf(&font_db)` API.
                 let mut font_db = s1_text::FontDatabase::new();
+                // On macOS, also pull in Microsoft Office's bundled font set
+                // and the cloud-font cache — those hold Calibri, Cambria,
+                // Aptos and the localized CJK families that DOCX files
+                // typically reference but which aren't part of the system
+                // font set.
+                font_db.load_macos_office_fonts();
                 // Load fonts embedded in the source DOCX (.odttf de-obfuscated)
                 // so that documents using non-system fonts (e.g. Ubuntu) render
                 // with correct metrics instead of falling back to Times New Roman.

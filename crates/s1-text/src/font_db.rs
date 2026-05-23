@@ -20,8 +20,12 @@ static EMBEDDED_FONT: &[u8] = include_bytes!("../fonts/NotoSans-Regular.ttf");
 ///
 /// Maps document fonts that are often unavailable on other platforms to
 /// widely-available alternatives. Used when the exact font isn't found.
+///
+/// Lookup is case-insensitive (see `lookup_substitutes`); add new entries in
+/// their canonical English spelling and let `localize_family_name` handle
+/// non-Latin variants.
 const FONT_SUBSTITUTIONS: &[(&str, &[&str])] = &[
-    // Microsoft Office fonts → alternatives
+    // Microsoft Office fonts → metric-compatible open alternatives
     (
         "Calibri",
         &[
@@ -58,7 +62,7 @@ const FONT_SUBSTITUTIONS: &[(&str, &[&str])] = &[
     ("Tahoma", &["DejaVu Sans", "Liberation Sans", "Noto Sans"]),
     (
         "Trebuchet MS",
-        &["Liberation Sans", "DejaVu Sans", "Noto Sans"],
+        &["Ubuntu", "Liberation Sans", "DejaVu Sans", "Noto Sans"],
     ),
     (
         "Georgia",
@@ -80,6 +84,21 @@ const FONT_SUBSTITUTIONS: &[(&str, &[&str])] = &[
         "Century Gothic",
         &["URW Gothic", "Liberation Sans", "Noto Sans"],
     ),
+    // Common Microsoft system fonts not covered above.
+    (
+        "Arial",
+        &["Liberation Sans", "Arimo", "Helvetica", "Noto Sans"],
+    ),
+    (
+        "Times New Roman",
+        &["Liberation Serif", "Tinos", "Times", "Noto Serif"],
+    ),
+    (
+        "Courier New",
+        &["Liberation Mono", "Cousine", "DejaVu Sans Mono"],
+    ),
+    ("Comic Sans MS", &["Comic Neue", "DejaVu Sans"]),
+    ("Impact", &["Oswald", "DejaVu Sans"]),
     // macOS fonts → alternatives on Linux/Windows
     (
         "Helvetica Neue",
@@ -90,12 +109,92 @@ const FONT_SUBSTITUTIONS: &[(&str, &[&str])] = &[
         "Times",
         &["Times New Roman", "Liberation Serif", "Noto Serif"],
     ),
-    // CJK font fallbacks
-    ("SimSun", &["Noto Serif CJK SC", "WenQuanYi Zen Hei"]),
-    ("SimHei", &["Noto Sans CJK SC", "WenQuanYi Zen Hei"]),
-    ("MS Mincho", &["Noto Serif CJK JP", "IPAMincho"]),
-    ("MS Gothic", &["Noto Sans CJK JP", "IPAGothic"]),
-    ("Malgun Gothic", &["Noto Sans CJK KR"]),
+    // Modern web fonts that often show up in DOCX/PPTX exports.
+    (
+        "Raleway",
+        &[
+            "Helvetica",
+            "Arial",
+            "Apple SD Gothic Neo",
+            "Noto Sans CJK KR",
+            "Malgun Gothic",
+            "Liberation Sans",
+        ],
+    ),
+    (
+        "Lato",
+        &[
+            "Helvetica",
+            "Arial",
+            "Apple SD Gothic Neo",
+            "Noto Sans CJK KR",
+            "Malgun Gothic",
+            "Liberation Sans",
+        ],
+    ),
+    (
+        "Pretendard",
+        &[
+            "Apple SD Gothic Neo",
+            "Noto Sans CJK KR",
+            "Malgun Gothic",
+            "Arial Unicode MS",
+            "Helvetica",
+            "Arial",
+            "Liberation Sans",
+        ],
+    ),
+    // CJK font fallbacks. Entries here also act as the resolution target for
+    // the localized aliases in `localize_family_name`.
+    (
+        "SimSun",
+        &[
+            "Noto Serif CJK SC",
+            "WenQuanYi Zen Hei",
+            "Source Han Serif SC",
+        ],
+    ),
+    (
+        "SimHei",
+        &[
+            "Noto Sans CJK SC",
+            "WenQuanYi Zen Hei",
+            "Source Han Sans SC",
+        ],
+    ),
+    (
+        "Microsoft YaHei",
+        &["Noto Sans CJK SC", "PingFang SC", "Source Han Sans SC"],
+    ),
+    (
+        "MS Mincho",
+        &["Noto Serif CJK JP", "IPAMincho", "Hiragino Mincho ProN"],
+    ),
+    (
+        "MS Gothic",
+        &["Noto Sans CJK JP", "IPAGothic", "Hiragino Sans"],
+    ),
+    ("Meiryo", &["Noto Sans CJK JP", "Hiragino Sans"]),
+    ("Yu Gothic", &["Noto Sans CJK JP", "Hiragino Sans"]),
+    (
+        "Malgun Gothic",
+        &["Noto Sans CJK KR", "Apple SD Gothic Neo"],
+    ),
+    (
+        "Gulim",
+        &["Noto Sans CJK KR", "Apple SD Gothic Neo", "Malgun Gothic"],
+    ),
+    (
+        "Dotum",
+        &["Noto Sans CJK KR", "Apple SD Gothic Neo", "Malgun Gothic"],
+    ),
+    ("Batang", &["Noto Serif CJK KR", "Apple SD Gothic Neo"]),
+    ("Gungsuh", &["Noto Serif CJK KR", "Apple SD Gothic Neo"]),
+    ("Nanum Gothic", &["Noto Sans CJK KR", "Apple SD Gothic Neo"]),
+    (
+        "Nanum Myeongjo",
+        &["Noto Serif CJK KR", "Apple SD Gothic Neo"],
+    ),
     // Arabic
     (
         "Arabic Typesetting",
@@ -105,6 +204,37 @@ const FONT_SUBSTITUTIONS: &[(&str, &[&str])] = &[
     // Indic
     ("Mangal", &["Noto Sans Devanagari", "Noto Serif Devanagari"]),
 ];
+
+/// Map a non-Latin or localized font family name to its canonical English
+/// spelling. OOXML files routinely use Korean / Japanese / Chinese names that
+/// don't match the names by which the corresponding TrueType files register.
+///
+/// Returns the original name if no alias is known.
+pub fn localize_family_name(family: &str) -> &str {
+    let trimmed = family.trim();
+    match trimmed {
+        // Korean
+        "맑은 고딕" => "Malgun Gothic",
+        "굴림" => "Gulim",
+        "돋움" => "Dotum",
+        "바탕" => "Batang",
+        "궁서" => "Gungsuh",
+        "나눔고딕" | "나눔 고딕" => "Nanum Gothic",
+        "나눔명조" | "나눔 명조" => "Nanum Myeongjo",
+        // Japanese
+        "メイリオ" => "Meiryo",
+        "MS ゴシック" => "MS Gothic",
+        "MS 明朝" => "MS Mincho",
+        "游ゴシック" => "Yu Gothic",
+        // Chinese
+        "微软雅黑" => "Microsoft YaHei",
+        "宋体" | "宋體" => "SimSun",
+        // Older Korean encoding sometimes shows up in Office localization
+        "MS 고딕" => "MS Gothic",
+        "MS 명조" => "MS Mincho",
+        _ => trimmed,
+    }
+}
 
 /// Script-preferred font families for fallback ordering.
 ///
@@ -233,6 +363,22 @@ impl FontDatabase {
         self.db.load_fonts_dir(path);
     }
 
+    /// Load fonts shipped with Microsoft Office on macOS, plus the cloud-font
+    /// caches Office keeps in `~/Library/Group Containers`. These directories
+    /// contain the actual Calibri / Cambria / Aptos / Korean Office fonts that
+    /// Word users see in their DOCX files but which are not part of the
+    /// macOS system font set.
+    ///
+    /// No-op on non-macOS targets.
+    pub fn load_macos_office_fonts(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            for path in discover_macos_office_font_paths() {
+                self.db.load_fonts_dir(&path);
+            }
+        }
+    }
+
     /// Load a single font file.
     pub fn load_font_file(&mut self, path: &std::path::Path) -> Result<(), TextError> {
         self.db
@@ -277,23 +423,33 @@ impl FontDatabase {
     /// unavailable fonts to available alternatives (e.g., Calibri → Carlito).
     /// Results are cached to avoid repeated substitution table scans.
     pub fn find_with_substitution(&self, family: &str, bold: bool, italic: bool) -> Option<FontId> {
-        // Try exact match first
+        // 1. Exact match on the requested name.
         if let Some(id) = self.find(family, bold, italic) {
             return Some(id);
         }
 
-        // Check substitution cache
-        let cache_key = (family.to_lowercase(), bold, italic);
+        // 2. Localized alias — OOXML often uses Korean / Japanese / Chinese
+        //    family names (e.g. "맑은 고딕") that don't match the registered
+        //    TrueType name. Map them to their canonical English form.
+        let aliased = localize_family_name(family);
+        if aliased != family {
+            if let Some(id) = self.find(aliased, bold, italic) {
+                return Some(id);
+            }
+        }
+
+        // 3. Cached substitution lookup.
+        let cache_key = (aliased.to_lowercase(), bold, italic);
         if let Ok(cache) = self.substitution_cache.lock() {
             if let Some(cached) = cache.get(&cache_key) {
                 return *cached;
             }
         }
 
-        // Try substitution table
+        // 4. Case-insensitive substitution-table scan on the aliased name.
         let mut result = None;
         for &(src, alternatives) in FONT_SUBSTITUTIONS {
-            if src.to_lowercase() == cache_key.0 {
+            if src.eq_ignore_ascii_case(aliased) {
                 for &alt in alternatives {
                     if let Some(id) = self.find(alt, bold, italic) {
                         result = Some(id);
@@ -304,11 +460,9 @@ impl FontDatabase {
             }
         }
 
-        // Cache the substitution result (even None to avoid repeated misses)
         if let Ok(mut cache) = self.substitution_cache.lock() {
             cache.insert(cache_key, result);
         }
-
         result
     }
 
@@ -443,6 +597,63 @@ impl Default for FontDatabase {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Discover font directories shipped with Microsoft Office on macOS, plus the
+/// per-version cloud-font cache. Returns the directories that exist and
+/// contain font files.
+#[cfg(target_os = "macos")]
+pub fn discover_macos_office_font_paths() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let mut roots: Vec<PathBuf> = vec![PathBuf::from("/Applications")];
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        roots.push(home.join("Applications"));
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for root in &roots {
+        for app in [
+            "Microsoft Word.app",
+            "Microsoft Excel.app",
+            "Microsoft PowerPoint.app",
+            "Microsoft Outlook.app",
+        ] {
+            candidates.push(root.join(app).join("Contents/Resources/DFonts"));
+        }
+    }
+
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let cache_root = home.join("Library/Group Containers/UBF8T346G9.Office/FontCache");
+        if let Ok(entries) = std::fs::read_dir(&cache_root) {
+            // Office stores the cache under a version-numbered subdirectory
+            // (e.g. ".../FontCache/4/"); pick the highest numeric child.
+            let latest = entries
+                .flatten()
+                .filter_map(|e| {
+                    let p = e.path();
+                    let v: u32 = p.file_name()?.to_str()?.parse().ok()?;
+                    Some((v, p))
+                })
+                .max_by_key(|(v, _)| *v)
+                .map(|(_, p)| p);
+            if let Some(font_root) = latest {
+                candidates.push(font_root.join("CloudFonts"));
+                candidates.push(font_root.join("PreviewFont"));
+            }
+        }
+    }
+
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for p in candidates {
+        if let Ok(canon) = std::fs::canonicalize(&p) {
+            if canon.is_dir() && seen.insert(canon.clone()) {
+                out.push(canon);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -610,5 +821,30 @@ mod tests {
             id.is_some(),
             "Calibri should substitute to embedded Noto Sans"
         );
+    }
+
+    #[test]
+    fn localized_cjk_aliases_normalize_to_english() {
+        // Smoke test on the alias table itself — covers the cases we care about
+        // even when none of the actual CJK fonts are installed on the test
+        // machine.
+        assert_eq!(localize_family_name("맑은 고딕"), "Malgun Gothic");
+        assert_eq!(localize_family_name("微软雅黑"), "Microsoft YaHei");
+        assert_eq!(localize_family_name("メイリオ"), "Meiryo");
+        assert_eq!(localize_family_name("MS 명조"), "MS Mincho");
+        // Untouched English names pass through unchanged.
+        assert_eq!(localize_family_name("Helvetica"), "Helvetica");
+        assert_eq!(localize_family_name("Calibri"), "Calibri");
+    }
+
+    #[cfg(feature = "embedded-font")]
+    #[test]
+    fn case_insensitive_substitution() {
+        let db = FontDatabase::with_embedded_fallback();
+        // Lower-case lookup still hits the substitution table.
+        let lower = db.find_with_substitution("calibri", false, false);
+        let mixed = db.find_with_substitution("Calibri", false, false);
+        assert_eq!(lower, mixed);
+        assert!(lower.is_some());
     }
 }
