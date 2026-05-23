@@ -23,6 +23,7 @@ jobs:
   release:
     name: Build wasm + cut GitHub release + publish npm
     runs-on: ubuntu-latest
+    environment: release
     steps:
       - uses: actions/checkout@v4
 

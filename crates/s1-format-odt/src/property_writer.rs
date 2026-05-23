@@ -1,8 +1,8 @@
 //! Write s1-model attributes as ODF style property elements.
 
 use s1_model::{
-    Alignment, AttributeKey, AttributeMap, AttributeValue, BorderStyle, LineSpacing,
-    TabAlignment, TabLeader, UnderlineStyle, VerticalAlignment,
+    Alignment, AttributeKey, AttributeMap, AttributeValue, BorderStyle, LineSpacing, TabAlignment,
+    TabLeader, UnderlineStyle, VerticalAlignment,
 };
 
 use crate::xml_util::{escape_xml, points_to_cm};
@@ -260,7 +260,10 @@ pub fn write_table_cell_properties(attrs: &AttributeMap) -> String {
             props.push(format!(r#"fo:border-top="{}""#, border_side_to_odf(side)));
         }
         if let Some(ref side) = borders.bottom {
-            props.push(format!(r#"fo:border-bottom="{}""#, border_side_to_odf(side)));
+            props.push(format!(
+                r#"fo:border-bottom="{}""#,
+                border_side_to_odf(side)
+            ));
         }
         if let Some(ref side) = borders.left {
             props.push(format!(r#"fo:border-left="{}""#, border_side_to_odf(side)));

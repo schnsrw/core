@@ -977,7 +977,8 @@ fn cross_format_fidelity_audit() {
             if b[i] == b'<' {
                 let start = i + 1;
                 if start < b.len() && b[start] != b'/' && b[start] != b'?' && b[start] != b'!' {
-                    let j = b[start..].iter()
+                    let j = b[start..]
+                        .iter()
                         .position(|&c| c == b' ' || c == b'>' || c == b'/')
                         .map(|p| start + p)
                         .unwrap_or(b.len());
@@ -993,30 +994,44 @@ fn cross_format_fidelity_audit() {
     }
 
     fn xml_from_docx(pkg: &s1_ooxml::Package, part: &str) -> String {
-        pkg.parts.get(part).and_then(|p| match &p.content {
-            s1_ooxml::PartContent::Xml(t) => t.write().ok()
-                .and_then(|b| String::from_utf8(b).ok()),
-            _ => None,
-        }).unwrap_or_default()
+        pkg.parts
+            .get(part)
+            .and_then(|p| match &p.content {
+                s1_ooxml::PartContent::Xml(t) => {
+                    t.write().ok().and_then(|b| String::from_utf8(b).ok())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
     }
 
     fn xml_from_odt(pkg: &s1_odf::Package, part: &str) -> String {
-        pkg.parts.get(part).and_then(|p| match &p.content {
-            s1_odf::PartContent::Xml(t) => t.write().ok()
-                .and_then(|b| String::from_utf8(b).ok()),
-            _ => None,
-        }).unwrap_or_default()
+        pkg.parts
+            .get(part)
+            .and_then(|p| match &p.content {
+                s1_odf::PartContent::Xml(t) => {
+                    t.write().ok().and_then(|b| String::from_utf8(b).ok())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
     }
 
-    fn tag_loss(orig: &HashMap<String, usize>, round: &HashMap<String, usize>)
-        -> (usize, usize, Vec<(String, usize, usize)>)
-    {
+    fn tag_loss(
+        orig: &HashMap<String, usize>,
+        round: &HashMap<String, usize>,
+    ) -> (usize, usize, Vec<(String, usize, usize)>) {
         let orig_total: usize = orig.values().sum();
         let round_total: usize = round.values().sum();
-        let mut drops: Vec<(String, usize, usize)> = orig.iter()
+        let mut drops: Vec<(String, usize, usize)> = orig
+            .iter()
             .filter_map(|(tag, &cnt)| {
                 let r = *round.get(tag).unwrap_or(&0);
-                if r < cnt { Some((tag.clone(), cnt, r)) } else { None }
+                if r < cnt {
+                    Some((tag.clone(), cnt, r))
+                } else {
+                    None
+                }
             })
             .collect();
         drops.sort_by(|a, b| (b.1 - b.2).cmp(&(a.1 - a.2)));
@@ -1024,7 +1039,7 @@ fn cross_format_fidelity_audit() {
     }
 
     let docx_fixtures_dir = workspace_path("testdocs/docx/eigenpal");
-    let odt_fixtures_dir  = workspace_path("testdocs/odt/samples");
+    let odt_fixtures_dir = workspace_path("testdocs/odt/samples");
     let engine = Engine::new();
 
     // ── DOCX → ODT → DOCX ─────────────────────────────────────────────────
@@ -1085,8 +1100,11 @@ fn cross_format_fidelity_audit() {
             total_round += round_total_tags;
             fixture_count += 1;
 
-            let survival = if orig_total_tags == 0 { 100.0 }
-                else { (orig_total_tags.saturating_sub(dropped)) as f64 / orig_total_tags as f64 * 100.0 };
+            let survival = if orig_total_tags == 0 {
+                100.0
+            } else {
+                (orig_total_tags.saturating_sub(dropped)) as f64 / orig_total_tags as f64 * 100.0
+            };
 
             let fname = path.file_name().unwrap().to_str().unwrap();
             eprintln!("  {fname}: {orig_total_tags} → {round_total_tags} tags, -{dropped} dropped ({survival:.0}% survive)");
@@ -1159,8 +1177,11 @@ fn cross_format_fidelity_audit() {
             total_round_odt += round_total_tags;
             odt_count += 1;
 
-            let survival = if orig_total_tags == 0 { 100.0 }
-                else { (orig_total_tags.saturating_sub(dropped)) as f64 / orig_total_tags as f64 * 100.0 };
+            let survival = if orig_total_tags == 0 {
+                100.0
+            } else {
+                (orig_total_tags.saturating_sub(dropped)) as f64 / orig_total_tags as f64 * 100.0
+            };
 
             let fname = path.file_name().unwrap().to_str().unwrap();
             eprintln!("  {fname}: {orig_total_tags} → {round_total_tags} tags, -{dropped} dropped ({survival:.0}% survive)");

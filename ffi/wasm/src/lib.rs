@@ -6,11 +6,11 @@
 
 use std::ffi::OsStr;
 
-use s1engine::{Engine, Format};
 use s1_model::{
-    AttributeKey, AttributeValue, DocumentModel, FieldType, LineSpacing, ListFormat,
-    NodeId, NodeType, PageOrientation, TableWidth, VerticalAlignment,
+    AttributeKey, AttributeValue, DocumentModel, FieldType, LineSpacing, ListFormat, NodeId,
+    NodeType, PageOrientation, TableWidth, VerticalAlignment,
 };
+use s1engine::{Engine, Format};
 use wasm_bindgen::prelude::*;
 
 /// Detect a document's format from its first bytes.
@@ -98,9 +98,7 @@ pub fn convert_from_model(model: JsValue, to: &str) -> Result<Vec<u8>, JsError> 
 #[wasm_bindgen]
 pub fn open_to_json(data: &[u8], from: &str) -> Result<JsValue, JsError> {
     let s = open_to_json_string(data, from)?;
-    js_sys::JSON::parse(&s).map_err(|e| {
-        JsError::new(&format!("JSON.parse failed: {:?}", e))
-    })
+    js_sys::JSON::parse(&s).map_err(|e| JsError::new(&format!("JSON.parse failed: {:?}", e)))
 }
 
 fn open_document(data: &[u8], from: &str) -> Result<s1engine::Document, JsError> {
@@ -385,8 +383,12 @@ fn parse_node_id(s: &str) -> Result<NodeId, String> {
     let (rep, ctr) = s
         .split_once(':')
         .ok_or_else(|| format!("invalid node id {s:?} (expected 'replica:counter')"))?;
-    let replica: u64 = rep.parse().map_err(|e| format!("bad replica in {s:?}: {e}"))?;
-    let counter: u64 = ctr.parse().map_err(|e| format!("bad counter in {s:?}: {e}"))?;
+    let replica: u64 = rep
+        .parse()
+        .map_err(|e| format!("bad replica in {s:?}: {e}"))?;
+    let counter: u64 = ctr
+        .parse()
+        .map_err(|e| format!("bad counter in {s:?}: {e}"))?;
     Ok(NodeId { replica, counter })
 }
 
@@ -729,17 +731,28 @@ mod tests {
         let mut model = DocumentModel::new();
         let body_id = model.next_id();
         model
-            .insert_node(model.root_id(), 0, s1_model::Node::new(body_id, NodeType::Body))
+            .insert_node(
+                model.root_id(),
+                0,
+                s1_model::Node::new(body_id, NodeType::Body),
+            )
             .unwrap();
         let para_id = model.next_id();
         model
-            .insert_node(body_id, 0, s1_model::Node::new(para_id, NodeType::Paragraph))
+            .insert_node(
+                body_id,
+                0,
+                s1_model::Node::new(para_id, NodeType::Paragraph),
+            )
             .unwrap();
         let run_id = model.next_id();
         let mut run = s1_model::Node::new(run_id, NodeType::Run);
-        run.attributes.set(AttributeKey::Bold, AttributeValue::Bool(true));
         run.attributes
-            .set(AttributeKey::FontFamily, AttributeValue::String("Arial".into()));
+            .set(AttributeKey::Bold, AttributeValue::Bool(true));
+        run.attributes.set(
+            AttributeKey::FontFamily,
+            AttributeValue::String("Arial".into()),
+        );
         model.insert_node(para_id, 0, run).unwrap();
         let text_id = model.next_id();
         model

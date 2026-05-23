@@ -101,10 +101,7 @@ fn process_event(
                             // preserves it via pStyle. e.g. "Quote2".
                             node.attributes.set(
                                 AttributeKey::StyleId,
-                                AttributeValue::String(format!(
-                                    "Quote{}",
-                                    ctx.blockquote_depth
-                                )),
+                                AttributeValue::String(format!("Quote{}", ctx.blockquote_depth)),
                             );
                         }
                     }
@@ -291,13 +288,7 @@ fn process_event(
                 if let Some(row_id) = ctx.table_row_id {
                     let col_idx = ctx.row_child_index;
                     let cell_id = doc.next_id();
-                    insert_node(
-                        doc,
-                        row_id,
-                        col_idx,
-                        cell_id,
-                        NodeType::TableCell,
-                    )?;
+                    insert_node(doc, row_id, col_idx, cell_id, NodeType::TableCell)?;
                     ctx.row_child_index += 1;
 
                     let para_id = doc.next_id();

@@ -589,7 +589,10 @@ fn resolve_column_widths_twips(doc: &DocumentModel, table: &s1_model::Node) -> V
         }
     }
     if !any {
-        if let Some(s) = table.attributes.get_string(&AttributeKey::TableColumnWidths) {
+        if let Some(s) = table
+            .attributes
+            .get_string(&AttributeKey::TableColumnWidths)
+        {
             for (idx, part) in s.split(',').enumerate() {
                 if idx >= col_count {
                     break;
@@ -645,7 +648,10 @@ fn write_table_grid(doc: &DocumentModel, table: &s1_model::Node, xml: &mut Strin
     // Fall back to table-level column widths (set by the ODT reader from
     // `table-column-properties`) when cells don't carry explicit widths.
     if !has_widths {
-        if let Some(widths_str) = table.attributes.get_string(&AttributeKey::TableColumnWidths) {
+        if let Some(widths_str) = table
+            .attributes
+            .get_string(&AttributeKey::TableColumnWidths)
+        {
             let parsed: Vec<i64> = widths_str
                 .split(',')
                 .filter_map(|s| {
@@ -789,10 +795,7 @@ fn write_table_cell(
     let mut tcp = write_cell_properties(&cell.attributes);
     if !cell.attributes.contains(&AttributeKey::CellWidth) {
         if let Some(twips) = fallback_width_twips {
-            tcp.insert_str(
-                0,
-                &format!(r#"<w:tcW w:w="{twips}" w:type="dxa"/>"#),
-            );
+            tcp.insert_str(0, &format!(r#"<w:tcW w:w="{twips}" w:type="dxa"/>"#));
         }
     }
     if !tcp.is_empty() {
@@ -921,7 +924,9 @@ fn write_row_properties(attrs: &s1_model::AttributeMap) -> String {
         trp.push_str(&format!(r#"<w:trHeight w:val="{twips}" w:hRule="exact"/>"#));
     } else if let Some(pts) = attrs.get_f64(&AttributeKey::MinRowHeight) {
         let twips = points_to_twips(pts);
-        trp.push_str(&format!(r#"<w:trHeight w:val="{twips}" w:hRule="atLeast"/>"#));
+        trp.push_str(&format!(
+            r#"<w:trHeight w:val="{twips}" w:hRule="atLeast"/>"#
+        ));
     }
 
     // Row property change tracking (trPrChange)

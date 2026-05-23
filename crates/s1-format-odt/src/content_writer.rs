@@ -1005,7 +1005,9 @@ fn write_table(
         // (set by the ODT reader from `<table:table-column>` references) or
         // from the DOCX reader's `<w:gridCol>` extraction.
         if col_widths.iter().all(|w| w.is_none()) {
-            if let Some(widths_str) = table.attributes.get_string(&AttributeKey::TableColumnWidths)
+            if let Some(widths_str) = table
+                .attributes
+                .get_string(&AttributeKey::TableColumnWidths)
             {
                 for (idx, part) in widths_str.split(',').enumerate() {
                     if idx >= col_count {
@@ -1022,9 +1024,7 @@ fn write_table(
 
         if col_widths.iter().any(|w| w.is_some()) {
             for w in &col_widths {
-                let cm = w
-                    .map(points_to_cm)
-                    .unwrap_or_else(|| "2.000cm".to_string());
+                let cm = w.map(points_to_cm).unwrap_or_else(|| "2.000cm".to_string());
                 let key = AutoStyleKey {
                     text_props: String::new(),
                     para_props: String::new(),
