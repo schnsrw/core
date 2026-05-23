@@ -103,6 +103,18 @@ fn write_block(
                 return;
             }
 
+            // Blockquote: paragraph with StyleId="Quote<N>". Emit "> " per
+            // level so nested quotes round-trip.
+            let quote_depth = node
+                .attributes
+                .get_string(&AttributeKey::StyleId)
+                .and_then(|s| s.strip_prefix("Quote"))
+                .and_then(|n| n.parse::<u32>().ok())
+                .unwrap_or(0);
+            for _ in 0..quote_depth {
+                out.push_str("> ");
+            }
+
             // Check for heading via StyleId
             if let Some(style_id) = node.attributes.get_string(&AttributeKey::StyleId) {
                 if let Some(level) = heading_level(style_id) {

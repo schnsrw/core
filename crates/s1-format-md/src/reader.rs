@@ -40,6 +40,7 @@ pub fn read(input: &str) -> Result<DocumentModel, MdError> {
         cell_child_index: 0,
         table_alignments: Vec::new(),
         in_code_block: false,
+        blockquote_depth: 0,
     };
 
     for event in parser {
@@ -69,6 +70,7 @@ struct ReadContext {
     cell_child_index: usize,
     table_alignments: Vec<CmAlignment>,
     in_code_block: bool,
+    blockquote_depth: u32,
 }
 
 struct ListState {
@@ -93,6 +95,19 @@ fn process_event(
                         para_id,
                         NodeType::Paragraph,
                     )?;
+                    if ctx.blockquote_depth > 0 {
+                        if let Some(node) = doc.node_mut(para_id) {
+                            // Encode blockquote depth in the style ID so DOCX
+                            // preserves it via pStyle. e.g. "Quote2".
+                            node.attributes.set(
+                                AttributeKey::StyleId,
+                                AttributeValue::String(format!(
+                                    "Quote{}",
+                                    ctx.blockquote_depth
+                                )),
+                            );
+                        }
+                    }
                     ctx.body_child_index += 1;
                     ctx.container_stack.push((para_id, 0));
                 }
@@ -225,6 +240,7 @@ fn process_event(
             Tag::BlockQuote(_) => {
                 ctx.container_stack
                     .push((ctx.body_id, ctx.body_child_index));
+                ctx.blockquote_depth += 1;
             }
             Tag::Table(alignments) => {
                 let table_id = doc.next_id();
@@ -343,6 +359,9 @@ fn process_event(
             }
             TagEnd::BlockQuote(_) => {
                 ctx.container_stack.pop();
+                if ctx.blockquote_depth > 0 {
+                    ctx.blockquote_depth -= 1;
+                }
             }
             TagEnd::Table => {
                 ctx.in_table = false;

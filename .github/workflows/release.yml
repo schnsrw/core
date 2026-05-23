@@ -1,14 +1,13 @@
 name: Release
 
-# Cuts a GitHub release on a `vX.Y.Z` tag push. Builds the WASM bundle
-# and the `@schnsrw/core` TS wrapper, packs them into a tarball, and
-# attaches the tarball to the release so people can download a tested
-# build straight from GitHub.
+# Cuts a GitHub release AND publishes `@schnsrw/core` to npm on a
+# `vX.Y.Z` tag push. The job builds the WASM bundle and the TypeScript
+# wrapper, packs them into a tarball attached to the GitHub release,
+# and then runs `npm publish` (requires NPM_TOKEN repo secret with an
+# automation token from https://www.npmjs.com/settings/<user>/tokens).
 #
-# The npm publish step has been intentionally removed for the 0.x line.
 # The live demo at https://schnsrw.github.io/core/ is deployed by
-# `pages.yml` on every push to `main`, so end users have a working
-# in-browser test surface even without an npm package.
+# `pages.yml` on every push to `main`.
 
 on:
   push:
@@ -22,7 +21,7 @@ permissions:
 
 jobs:
   release:
-    name: Build wasm + cut GitHub release
+    name: Build wasm + cut GitHub release + publish npm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +38,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          registry-url: https://registry.npmjs.org
 
       - name: Build wasm
         run: wasm-pack build ffi/wasm --target web --release --out-dir ../../js/wasm
@@ -48,6 +48,17 @@ jobs:
         run: |
           npm install
           npm run build:ts
+
+      - name: Verify package.json version matches tag
+        working-directory: js
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match js/package.json ($PKG_VERSION). Update package.json and re-tag."
+            exit 1
+          fi
+          echo "Publishing @schnsrw/core@$PKG_VERSION"
 
       - name: Pack release tarball
         id: pack
@@ -64,3 +75,13 @@ jobs:
         with:
           generate_release_notes: true
           files: ${{ steps.pack.outputs.tarball }}
+
+      - name: Publish to npm
+        working-directory: js
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # Scoped public package; explicit --access public required on first
+          # publish so npm doesn't default to private (which fails for free
+          # accounts). Subsequent versions inherit the scope's setting.
+          npm publish --provenance --access public
