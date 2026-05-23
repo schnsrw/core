@@ -39,6 +39,7 @@ pub fn read(input: &str) -> Result<DocumentModel, MdError> {
         cell_para_id: None,
         cell_child_index: 0,
         table_alignments: Vec::new(),
+        in_code_block: false,
     };
 
     for event in parser {
@@ -67,6 +68,7 @@ struct ReadContext {
     cell_para_id: Option<NodeId>,
     cell_child_index: usize,
     table_alignments: Vec<CmAlignment>,
+    in_code_block: bool,
 }
 
 struct ListState {
@@ -117,7 +119,7 @@ fn process_event(
             Tag::Strikethrough => {
                 ctx.strikethrough = true;
             }
-            Tag::CodeBlock(_kind) => {
+            Tag::CodeBlock(kind) => {
                 let para_id = doc.next_id();
                 insert_node(
                     doc,
@@ -126,9 +128,34 @@ fn process_event(
                     para_id,
                     NodeType::Paragraph,
                 )?;
+                if let Some(node) = doc.node_mut(para_id) {
+                    // Encode language into the StyleId so DOCX preserves it
+                    // automatically via pStyle reference (no separate attribute
+                    // needed). Example: "CodeBlock" or "CodeBlockRust".
+                    let style_id = match &kind {
+                        pulldown_cmark::CodeBlockKind::Fenced(lang) if !lang.is_empty() => {
+                            let mut s = String::from("CodeBlock");
+                            let lang_s = lang.to_string();
+                            // Capitalise the language so the style ID is a
+                            // single identifier (DOCX pStyle val must be
+                            // identifier-safe; spaces / hyphens are not
+                            // common). e.g. "rust" → "Rust".
+                            let mut chars = lang_s.chars();
+                            if let Some(first) = chars.next() {
+                                s.extend(first.to_uppercase());
+                                s.push_str(chars.as_str());
+                            }
+                            s
+                        }
+                        _ => "CodeBlock".to_string(),
+                    };
+                    node.attributes
+                        .set(AttributeKey::StyleId, AttributeValue::String(style_id));
+                }
                 ctx.body_child_index += 1;
                 ctx.container_stack.push((para_id, 0));
                 ctx.code = true;
+                ctx.in_code_block = true;
             }
             Tag::Link { dest_url, .. } => {
                 ctx.link_url = Some(dest_url.to_string());
@@ -159,10 +186,14 @@ fn process_event(
             }
             Tag::List(first_item) => {
                 ctx.numbering_counter += 1;
-                ctx.list_stack.push(ListState {
-                    num_id: ctx.numbering_counter,
-                    ordered: first_item.is_some(),
-                });
+                let num_id = ctx.numbering_counter;
+                let ordered = first_item.is_some();
+                // Register a numbering definition so the DOCX side preserves
+                // bullet vs. decimal through round-trip. Without this the
+                // DOCX writer emits w:numId references with no abstractNum
+                // backing, and re-parse falls back to decimal.
+                register_numbering(doc, num_id, ordered);
+                ctx.list_stack.push(ListState { num_id, ordered });
             }
             Tag::Item => {
                 let para_id = doc.next_id();
@@ -297,6 +328,7 @@ fn process_event(
             }
             TagEnd::CodeBlock => {
                 ctx.code = false;
+                ctx.in_code_block = false;
                 ctx.container_stack.pop();
             }
             TagEnd::Link => {
@@ -432,6 +464,48 @@ fn insert_node(
 ) -> Result<(), MdError> {
     doc.insert_node(parent_id, child_index, Node::new(node_id, node_type))
         .map_err(|e| MdError::Model(e.to_string()))
+}
+
+/// Register a numbering definition (abstract + instance) for a Markdown list.
+fn register_numbering(doc: &mut DocumentModel, num_id: u32, ordered: bool) {
+    use s1_model::{AbstractNumbering, NumberingInstance, NumberingLevel};
+
+    let abstract_num_id = num_id; // simplest 1:1 mapping
+    let format = if ordered {
+        ListFormat::Decimal
+    } else {
+        ListFormat::Bullet
+    };
+
+    let mut levels = Vec::new();
+    for lvl in 0..9u8 {
+        levels.push(NumberingLevel {
+            level: lvl,
+            num_format: format,
+            level_text: if ordered {
+                format!("%{}.", lvl + 1)
+            } else {
+                "\u{2022}".into()
+            },
+            start: 1,
+            indent_left: Some(36.0 * (lvl as f64 + 1.0)),
+            indent_hanging: Some(18.0),
+            alignment: None,
+            bullet_font: if ordered { None } else { Some("Symbol".into()) },
+        });
+    }
+
+    let numbering = doc.numbering_mut();
+    numbering.abstract_nums.push(AbstractNumbering {
+        abstract_num_id,
+        name: None,
+        levels,
+    });
+    numbering.instances.push(NumberingInstance {
+        num_id,
+        abstract_num_id,
+        level_overrides: vec![],
+    });
 }
 
 fn heading_level_to_u8(level: HeadingLevel) -> u8 {

@@ -310,6 +310,9 @@ pub enum AttributeKey {
     RowHeight,
     MinRowHeight,
 
+    /// Programming-language hint for code blocks (e.g. "rust", "python").
+    CodeLanguage,
+
     // Cell attributes
     CellWidth,
     VerticalAlign,

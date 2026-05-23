@@ -24,7 +24,24 @@ pub fn write(doc: &DocumentModel) -> String {
     let children: Vec<NodeId> = body.children.clone();
     for (i, &child_id) in children.iter().enumerate() {
         if i > 0 {
-            out.push('\n');
+            let prev_is_list = children
+                .get(i - 1)
+                .and_then(|&id| doc.node(id))
+                .map(|n| {
+                    n.node_type == NodeType::Paragraph
+                        && n.attributes.contains(&AttributeKey::ListInfo)
+                })
+                .unwrap_or(false);
+            let cur_is_list = doc
+                .node(child_id)
+                .map(|n| {
+                    n.node_type == NodeType::Paragraph
+                        && n.attributes.contains(&AttributeKey::ListInfo)
+                })
+                .unwrap_or(false);
+            if !(prev_is_list && cur_is_list) {
+                out.push('\n');
+            }
         }
         write_block(doc, child_id, &mut out, &mut list_counters);
     }
@@ -51,6 +68,41 @@ fn write_block(
 
     match node.node_type {
         NodeType::Paragraph => {
+            // Fenced code block: paragraph with StyleId starting with "CodeBlock"
+            let is_code_block = node
+                .attributes
+                .get_string(&AttributeKey::StyleId)
+                .map(|s| s.starts_with("CodeBlock"))
+                .unwrap_or(false);
+            if is_code_block {
+                let sid = node
+                    .attributes
+                    .get_string(&AttributeKey::StyleId)
+                    .unwrap_or("CodeBlock");
+                let lang = sid.strip_prefix("CodeBlock").unwrap_or("").to_lowercase();
+                out.push_str("```");
+                out.push_str(&lang);
+                out.push('\n');
+                // Collect plain text of children, ignoring run formatting
+                let mut body = String::new();
+                let children: Vec<NodeId> = node.children.clone();
+                for &child_id in &children {
+                    if let Some(c) = doc.node(child_id) {
+                        if c.node_type == NodeType::LineBreak {
+                            body.push('\n');
+                            continue;
+                        }
+                    }
+                    write_inline_text(doc, child_id, &mut body);
+                }
+                out.push_str(&body);
+                if !body.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push_str("```\n");
+                return;
+            }
+
             // Check for heading via StyleId
             if let Some(style_id) = node.attributes.get_string(&AttributeKey::StyleId) {
                 if let Some(level) = heading_level(style_id) {
@@ -65,12 +117,12 @@ fn write_block(
             if let Some(AttributeValue::ListInfo(info)) =
                 node.attributes.get(&AttributeKey::ListInfo)
             {
-                let indent = if info.level > 0 {
-                    "  ".repeat(info.level as usize)
-                } else {
-                    String::new()
-                };
-                out.push_str(&indent);
+                // MD reader sets level = 1 for top-level items (depth from
+                // root list). Indent only nested items.
+                let depth = info.level.saturating_sub(1) as usize;
+                if depth > 0 {
+                    out.push_str(&"  ".repeat(depth));
+                }
                 match info.num_format {
                     ListFormat::Decimal
                     | ListFormat::LowerAlpha
