@@ -151,11 +151,10 @@ fn write_block(
                 return;
             }
 
-            // Write inline content
-            let children: Vec<NodeId> = node.children.clone();
-            for &child_id in &children {
-                write_inline(doc, child_id, out);
-            }
+            // Write inline content — run-aware so shared formatting (e.g.
+            // bold spanning three runs with one italic in the middle) emits
+            // markers once around the span rather than per-run.
+            write_paragraph_runs(doc, node_id, out);
             out.push('\n');
         }
 
@@ -196,6 +195,231 @@ fn write_block(
             }
         }
     }
+}
+
+/// Write a paragraph's inline children with run-spanning formatting.
+///
+/// When several adjacent runs share a formatting attribute (e.g. all bold),
+/// the marker is emitted once at the span boundary rather than around each
+/// run. This avoids the per-run wrapping that produces broken output like
+/// `**bold *****italic***** inside**` for source `**bold *italic* inside**`.
+fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) {
+    let para = match doc.node(para_id) {
+        Some(n) => n,
+        None => return,
+    };
+
+    // Collect inline items in order, classifying each as a formatted run, a
+    // link, a code span, or other (line breaks etc.).
+    enum Inline<'a> {
+        Run {
+            text: String,
+            bold: bool,
+            italic: bool,
+            strike: bool,
+            code: bool,
+            url: Option<&'a str>,
+        },
+        LineBreak,
+        Image {
+            alt: String,
+            url: String,
+        },
+        Other,
+    }
+
+    let mut items: Vec<Inline> = Vec::new();
+    for &child_id in &para.children {
+        let n = match doc.node(child_id) {
+            Some(n) => n,
+            None => continue,
+        };
+        match n.node_type {
+            NodeType::LineBreak => items.push(Inline::LineBreak),
+            NodeType::Image => {
+                let alt = n
+                    .attributes
+                    .get_string(&AttributeKey::ImageAltText)
+                    .unwrap_or("")
+                    .to_string();
+                let url = n
+                    .attributes
+                    .get_string(&AttributeKey::HyperlinkUrl)
+                    .unwrap_or("")
+                    .to_string();
+                items.push(Inline::Image { alt, url });
+            }
+            NodeType::Run => {
+                let bold = n.attributes.get_bool(&AttributeKey::Bold) == Some(true);
+                let italic = n.attributes.get_bool(&AttributeKey::Italic) == Some(true);
+                let strike = n.attributes.get_bool(&AttributeKey::Strikethrough) == Some(true);
+                let code = n
+                    .attributes
+                    .get_string(&AttributeKey::FontFamily)
+                    .map(|f| f == "monospace")
+                    .unwrap_or(false);
+                let url = n.attributes.get_string(&AttributeKey::HyperlinkUrl);
+                let mut text = String::new();
+                for &cid in &n.children {
+                    write_inline_text(doc, cid, &mut text);
+                }
+                if text.is_empty() {
+                    continue;
+                }
+                items.push(Inline::Run {
+                    text,
+                    bold,
+                    italic,
+                    strike,
+                    code,
+                    url,
+                });
+            }
+            _ => items.push(Inline::Other),
+        }
+    }
+
+    // Markers tracked as a LIFO stack: opening pushes, closing pops in
+    // reverse order. This preserves proper Markdown nesting when a span
+    // opens before another and must close after.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        Bold,
+        Italic,
+        Strike,
+    }
+    fn open_marker(m: Mark, out: &mut String) {
+        match m {
+            Mark::Bold => out.push_str("**"),
+            Mark::Italic => out.push('*'),
+            Mark::Strike => out.push_str("~~"),
+        }
+    }
+    fn close_marker(m: Mark, out: &mut String) {
+        match m {
+            Mark::Bold => out.push_str("**"),
+            Mark::Italic => out.push('*'),
+            Mark::Strike => out.push_str("~~"),
+        }
+    }
+
+    let mut stack: Vec<Mark> = Vec::new();
+    let close_through = |stack: &mut Vec<Mark>, target: Mark, out: &mut String| {
+        // Pop until the target is removed; re-push anything else that
+        // shouldn't have been closed. Returns the list that needs reopening.
+        let mut reopen: Vec<Mark> = Vec::new();
+        while let Some(top) = stack.last().copied() {
+            close_marker(top, out);
+            stack.pop();
+            if top == target {
+                break;
+            }
+            reopen.push(top);
+        }
+        // Reopen in original order (reopen is in pop order = reverse of open
+        // order, so re-push as-is and re-emit; the stack order is preserved
+        // because reopen[last] was just below target).
+        for m in reopen.into_iter().rev() {
+            open_marker(m, out);
+            stack.push(m);
+        }
+    };
+
+    let close_all = |stack: &mut Vec<Mark>, out: &mut String| {
+        while let Some(top) = stack.pop() {
+            close_marker(top, out);
+        }
+    };
+
+    let target_set = |bold: bool, italic: bool, strike: bool| -> Vec<Mark> {
+        let mut v = Vec::new();
+        if bold {
+            v.push(Mark::Bold);
+        }
+        if strike {
+            v.push(Mark::Strike);
+        }
+        if italic {
+            v.push(Mark::Italic);
+        }
+        v
+    };
+
+    for item in &items {
+        match item {
+            Inline::LineBreak => {
+                close_all(&mut stack, out);
+                out.push_str("  \n");
+            }
+            Inline::Image { alt, url } => {
+                close_all(&mut stack, out);
+                out.push_str("![");
+                out.push_str(alt);
+                out.push_str("](");
+                out.push_str(url);
+                out.push(')');
+            }
+            Inline::Other => {}
+            Inline::Run {
+                text,
+                bold,
+                italic,
+                strike,
+                code,
+                url,
+            } => {
+                if url.is_some() || *code {
+                    close_all(&mut stack, out);
+                    if let Some(href) = url {
+                        if *code {
+                            out.push('[');
+                            out.push('`');
+                            out.push_str(text);
+                            out.push('`');
+                            out.push_str("](");
+                            out.push_str(href);
+                            out.push(')');
+                        } else {
+                            out.push('[');
+                            push_formatted(out, text, *bold, *italic, *strike);
+                            out.push_str("](");
+                            out.push_str(href);
+                            out.push(')');
+                        }
+                    } else {
+                        out.push('`');
+                        out.push_str(text);
+                        out.push('`');
+                    }
+                    continue;
+                }
+
+                let target = target_set(*bold, *italic, *strike);
+
+                // Close any open marker that isn't in target.
+                let mut to_close: Vec<Mark> = stack
+                    .iter()
+                    .filter(|m| !target.contains(m))
+                    .copied()
+                    .collect();
+                for m in to_close.drain(..).rev() {
+                    close_through(&mut stack, m, out);
+                }
+
+                // Open any target marker not already open.
+                for m in &target {
+                    if !stack.contains(m) {
+                        open_marker(*m, out);
+                        stack.push(*m);
+                    }
+                }
+
+                out.push_str(text);
+            }
+        }
+    }
+
+    close_all(&mut stack, out);
 }
 
 /// Write inline content with Markdown formatting markers.
