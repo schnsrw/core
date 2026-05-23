@@ -1801,12 +1801,18 @@ impl<'a> LayoutEngine<'a> {
     ) -> Result<ShapedRunInfo, LayoutError> {
         let run_style = resolve_run_style(self.doc, run_id);
 
-        // Find font with extended fallback chain
+        // Find font with extended fallback chain. `find_with_substitution`
+        // covers (a) the canonical name, (b) the localized CJK alias, and
+        // (c) the metric-compatible substitution table. Only if none of
+        // those resolves do we fall back to the bold/italic-less variant
+        // and the generic family chain below.
         let font_id = self
             .font_db
-            .find(&run_style.font_family, run_style.bold, run_style.italic)
-            // Try the same font without bold/italic
-            .or_else(|| self.font_db.find(&run_style.font_family, false, false))
+            .find_with_substitution(&run_style.font_family, run_style.bold, run_style.italic)
+            .or_else(|| {
+                self.font_db
+                    .find_with_substitution(&run_style.font_family, false, false)
+            })
             .or_else(|| self.font_db.find(DEFAULT_FONT_FAMILY, false, false))
             // Common serif fonts
             .or_else(|| self.font_db.find("Times New Roman", false, false))
