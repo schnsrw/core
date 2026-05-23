@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **WASM Phase B + C — JSON model surface.** `openToModel`,
+  `openToModelString` deserialize a document to a typed JSON tree
+  (`S1DocumentModel` with `S1Node[]`, metadata, styles, sections);
+  `convertModel`, `convertModelString` write a (possibly mutated) model
+  back to any supported output format. Symmetric round-trip enables an
+  editor consumer to operate on structured nodes without parsing
+  format-specific XML. (`ffi/wasm/src/lib.rs`, `js/src/index.ts`,
+  `js/src/types.ts`)
+- **Cross-format fidelity audit harness.** New
+  `cross_format_fidelity_audit` test in
+  `crates/s1engine/tests/real_world.rs` walks every DOCX → ODT → DOCX
+  and ODT → DOCX → ODT round-trip and reports per-fixture + aggregate
+  tag survival. Used as the regression signal for the cross-format
+  fixes below.
+- **Row height round-trip** — DOCX `<w:trHeight>` ↔ ODT
+  `style:row-height` / `style:min-row-height` via new
+  `AttributeKey::RowHeight` / `MinRowHeight`.
+- **`w:cantSplit` ↔ `fo:keep-together` round-trip** — prevents a table
+  row from being broken across pages in either format.
+- **`AttributeKey::CodeLanguage`** for fenced-code-block language
+  hints (encoded into the paragraph StyleId so DOCX preserves it).
+- **Release pipeline publishes to npm** — `release.yml` now runs
+  `npm publish --provenance --access public` for `@schnsrw/core` on
+  every `vX.Y.Z` tag push, gated by an `NPM_TOKEN` automation token in
+  the `release` GitHub Environment.
+
+### Fixed
+
+- **Cross-format DOCX → ODT → DOCX: 53.5 % → 98.2 % raw tag survival.**
+  Several discrete fixes:
+  - **Style-inherited bold/italic** survives ODT export — the ODT
+    `write_run` now calls `doc.resolve_attributes(run_id)` so
+    formatting attached via paragraph styles isn't dropped.
+  - **`fo:language` / `fo:country`** parse + emit; the `Language`
+    attribute now round-trips through both formats.
+  - **Cell borders** round-trip via `table-cell-properties` auto-styles
+    in the ODT auto-style map (previously parsed but never loaded).
+  - **Paragraph-level text-properties inherit to runs** at DOCX write
+    time so font name / size / color survive the ODT intermediate
+    (`write_run_properties_inherited` + `paragraph_text_defaults`).
+  - **Column widths** round-trip in both directions: ODT writer emits
+    per-column auto-styles with `style:column-width`; DOCX writer's
+    `tblGrid` falls back to table-level `TableColumnWidths` when cells
+    don't carry `CellWidth`; DOCX reader parses `w:tblGrid` into
+    `TableColumnWidths`.
+  - **Cell widths (`w:tcW`)** fall back to column-grid widths after an
+    ODT pass so cell-level widths still appear in DOCX output.
+  - **Multi-space sequences** encoded as `<text:s text:c="N"/>` per
+    ODF §6.1.3 in the ODT writer.
+- **Cross-format ODT → DOCX → ODT: 31.7 % → 56.1 % raw tag survival.**
+  Same fixes as above plus correct table-row auto-style emission.
+- **Markdown — table column alignment round-trips.** The reader
+  captures `Tag::Table` column alignments and applies them as
+  `Alignment` on each cell's first paragraph; the writer emits
+  `:---:` / `---:` / `:---` separator rows accordingly.
+- **Markdown — table cells preserve inline formatting.** Cell content
+  was previously rendered as plain text, stripping bold / italic /
+  code / links inside cells. Cells now go through `write_inline`, and
+  literal `|` characters are backslash-escaped.
+- **Markdown — fenced code blocks round-trip.** Were being written as
+  a single backtick wrapping every line. The reader now marks
+  code-block paragraphs with `StyleId="CodeBlock<Lang>"` (e.g.
+  `"CodeBlockRust"`); the writer emits a ``` fence with the language
+  hint. Language survives the DOCX intermediate via `pStyle`.
+- **Markdown — bullet vs. ordered list distinction survives DOCX.**
+  Reader now registers a `NumberingDefinitions` entry per list (bullet
+  → `•`, decimal → `"%n."`), so the DOCX side ships a backing
+  `numbering.xml` and re-parse recovers the correct `ListFormat`.
+- **Markdown — list output is tight.** Top-level items no longer
+  carry a leading two-space indent; adjacent list items don't get a
+  blank separator line.
+- **Markdown — nested emphasis emission.** `**bold _italic_ inside**`
+  was rendering as `**bold *****italic***** inside**`. The new
+  `write_paragraph_runs` uses a marker stack so shared formatting
+  (e.g. bold spanning three runs with one italic in the middle) emits
+  markers once around the span rather than around each run.
+- **Markdown — blockquotes round-trip.** Reader tags paragraphs in
+  blockquotes with `StyleId="Quote<N>"`; writer emits `> ` per level.
+  Nested blockquotes work because each `Tag::BlockQuote` bumps depth.
+- **Markdown — autolinks and link titles round-trip.** Autolinks
+  (`<url>`) are re-emitted in `<…>` form instead of `[url](url)`;
+  link titles flow through DOCX `<w:hyperlink w:tooltip="…">`.
+- **Markdown — inline code with embedded backticks.** Writer now picks
+  the minimum fence length that doesn't collide with the content
+  (CommonMark §6.1) and pads with spaces when the content begins or
+  ends with a backtick.
+- **Markdown — task list markers and footnote markers preserved.**
+  Enabled `ENABLE_TASKLISTS` + `ENABLE_FOOTNOTES`; the reader emits
+  `[ ] ` / `[x] ` for task markers and `[^label]` / `[^label]: ` for
+  footnote references and definitions.
+
 ### Fixed
 
 - **PDF: embedded DOCX fonts now loaded — Ubuntu and other non-system fonts
