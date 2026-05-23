@@ -251,6 +251,20 @@ fn process_event(
                     .push((ctx.body_id, ctx.body_child_index));
                 ctx.blockquote_depth += 1;
             }
+            Tag::HtmlBlock => {
+                // Open a paragraph to receive the inner Event::Html text so
+                // the block-level HTML survives the round-trip.
+                let para_id = doc.next_id();
+                insert_node(
+                    doc,
+                    ctx.body_id,
+                    ctx.body_child_index,
+                    para_id,
+                    NodeType::Paragraph,
+                )?;
+                ctx.body_child_index += 1;
+                ctx.container_stack.push((para_id, 0));
+            }
             Tag::FootnoteDefinition(label) => {
                 // Emit the definition as a paragraph whose first text run is
                 // `[^label]: `. This keeps the markdown source round-tripping
@@ -396,6 +410,9 @@ fn process_event(
             TagEnd::FootnoteDefinition => {
                 ctx.container_stack.pop();
             }
+            TagEnd::HtmlBlock => {
+                ctx.container_stack.pop();
+            }
             TagEnd::Table => {
                 ctx.in_table = false;
                 ctx.table_id = None;
@@ -411,6 +428,13 @@ fn process_event(
 
         Event::Text(text) => {
             emit_text(doc, ctx, &text)?;
+        }
+
+        Event::Html(html) | Event::InlineHtml(html) => {
+            // Pass HTML through as literal text so it survives the
+            // round-trip. We don't parse or render HTML structurally — by
+            // CommonMark default it's an opaque pass-through.
+            emit_text(doc, ctx, &html)?;
         }
 
         Event::TaskListMarker(checked) => {
