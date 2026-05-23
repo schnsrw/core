@@ -71,11 +71,21 @@ async function showModel() {
   try {
     await init();
     const model = await openToModel(currentBytes, currentFormat);
-    modelPre.textContent = JSON.stringify(model, null, 2);
+    const json = JSON.stringify(model, null, 2);
+    // Cap the rendered preview for very large documents — the full model is
+    // still in memory for download.
+    const MAX_CHARS = 200_000;
+    if (json.length > MAX_CHARS) {
+      modelPre.textContent =
+        json.slice(0, MAX_CHARS) +
+        `\n\n…truncated (${json.length.toLocaleString()} chars total)`;
+    } else {
+      modelPre.textContent = json;
+    }
     modelOut.hidden = false;
     modelOut.open = true;
     const count = Object.keys(model.nodes).length;
-    setStatus(`Loaded ${count} nodes.`);
+    setStatus(`Loaded ${count.toLocaleString()} nodes.`);
   } catch (err) {
     setStatus(err instanceof Error ? err.message : String(err), true);
   } finally {
