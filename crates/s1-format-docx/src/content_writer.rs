@@ -928,6 +928,11 @@ fn write_row_properties(attrs: &s1_model::AttributeMap) -> String {
         trp.push_str("<w:tblHeader/>");
     }
 
+    // Can't-split row
+    if attrs.get_bool(&AttributeKey::TableRowCantSplit) == Some(true) {
+        trp.push_str("<w:cantSplit/>");
+    }
+
     // Row height (exact via RowHeight; minimum via MinRowHeight)
     if let Some(pts) = attrs.get_f64(&AttributeKey::RowHeight) {
         let twips = points_to_twips(pts);

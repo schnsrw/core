@@ -365,13 +365,16 @@ fn parse_font_size(s: &str) -> Option<f64> {
     parse_length(s)
 }
 
-/// Parse `<style:table-row-properties>` attributes — height info only.
+/// Parse `<style:table-row-properties>` attributes — height + keep-together.
 pub fn parse_table_row_properties(e: &BytesStart<'_>) -> AttributeMap {
     let mut attrs = AttributeMap::new();
     if let Some(h) = get_attr(e, b"row-height").and_then(|v| parse_length(&v)) {
         attrs.set(AttributeKey::RowHeight, AttributeValue::Float(h));
     } else if let Some(h) = get_attr(e, b"min-row-height").and_then(|v| parse_length(&v)) {
         attrs.set(AttributeKey::MinRowHeight, AttributeValue::Float(h));
+    }
+    if get_attr(e, b"keep-together").as_deref() == Some("always") {
+        attrs.set(AttributeKey::TableRowCantSplit, AttributeValue::Bool(true));
     }
     attrs
 }

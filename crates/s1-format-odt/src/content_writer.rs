@@ -1210,7 +1210,8 @@ fn get_or_create_row_auto_style(
 ) -> Option<String> {
     let row_height = attrs.get_f64(&AttributeKey::RowHeight);
     let min_height = attrs.get_f64(&AttributeKey::MinRowHeight);
-    if row_height.is_none() && min_height.is_none() {
+    let cant_split = attrs.get_bool(&AttributeKey::TableRowCantSplit) == Some(true);
+    if row_height.is_none() && min_height.is_none() && !cant_split {
         return None;
     }
     let mut props = String::from("<style:table-row-properties");
@@ -1218,6 +1219,9 @@ fn get_or_create_row_auto_style(
         props.push_str(&format!(r#" style:row-height="{}""#, points_to_cm(h)));
     } else if let Some(h) = min_height {
         props.push_str(&format!(r#" style:min-row-height="{}""#, points_to_cm(h)));
+    }
+    if cant_split {
+        props.push_str(r#" fo:keep-together="always""#);
     }
     props.push_str("/>");
 

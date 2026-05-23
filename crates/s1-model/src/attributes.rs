@@ -305,6 +305,8 @@ pub enum AttributeKey {
     // Table row attributes
     /// Marks a table row as a header row that should repeat on continuation pages.
     TableHeaderRow,
+    /// Prevents the row from being split across pages (DOCX `<w:cantSplit/>`).
+    TableRowCantSplit,
 
     /// Row height in points. `MinRowHeight` allows growth; `RowHeight` is exact.
     RowHeight,

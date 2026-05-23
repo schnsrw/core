@@ -1559,7 +1559,11 @@ fn parse_table_row_into(
     let mut row_node = Node::new(row_id, NodeType::TableRow);
     if let Some(style_name) = get_attr(start, b"style-name") {
         if let Some(auto_attrs) = ctx.auto_styles.get(&style_name) {
-            for key in &[AttributeKey::RowHeight, AttributeKey::MinRowHeight] {
+            for key in &[
+                AttributeKey::RowHeight,
+                AttributeKey::MinRowHeight,
+                AttributeKey::TableRowCantSplit,
+            ] {
                 if let Some(v) = auto_attrs.get(key) {
                     row_node.attributes.set(key.clone(), v.clone());
                 }

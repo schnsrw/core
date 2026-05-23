@@ -661,6 +661,8 @@ pub fn parse_row_properties(reader: &mut Reader<&[u8]>) -> Result<AttributeMap, 
                 if e.local_name().as_ref() == b"tblHeader" {
                     // Row is a table header row
                     attrs.set(AttributeKey::TableHeaderRow, AttributeValue::Bool(true));
+                } else if e.local_name().as_ref() == b"cantSplit" {
+                    attrs.set(AttributeKey::TableRowCantSplit, AttributeValue::Bool(true));
                 } else if e.local_name().as_ref() == b"trHeight" {
                     let val = get_attr(&e, b"val").and_then(|v| v.parse::<f64>().ok());
                     let rule = get_attr(&e, b"hRule").unwrap_or_else(|| "atLeast".to_string());
