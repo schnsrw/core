@@ -13,6 +13,10 @@ import {
   convertToString,
   detectFormat,
   extractText,
+  openToModel,
+  openToModelString,
+  convertModel,
+  convertModelString,
 } from "@schnsrw/core";
 
 await init();
@@ -28,6 +32,18 @@ const text = await extractText(docxBytes, "docx");
 
 // Text-output convenience.
 const md = await convertToString(docxBytes, { from: "docx", to: "md" });
+
+// Open as a structured JSON model (Phase B).
+const model = await openToModel(docxBytes, "docx");
+//   model.nodes["0:1"].nodeType === "paragraph"
+
+// Write a (possibly mutated) JSON model back to bytes (Phase C).
+const odt = await convertModel(model, { to: "odt" });
+
+// String variants avoid an extra JS object hop — useful when you're
+// posting the payload to a worker or storing it.
+const modelStr = await openToModelString(docxBytes, "docx");
+const bytes    = await convertModelString(modelStr, { to: "pdf" });
 ```
 
 ### Types
@@ -48,9 +64,28 @@ interface DetectedFormat {
 interface InitOptions {
   wasmUrl?: string | URL;  // override the bundled .wasm location
 }
+
+interface S1Node {
+  id: string;                          // "replica:counter", e.g. "0:1"
+  nodeType: string;                    // "paragraph" | "run" | "table" | …
+  children: string[];                  // child node IDs in order
+  parent: string | null;
+  textContent: string | null;          // populated for nodeType === "text"
+  attributes: Record<string, unknown>; // camelCase keys
+}
+
+interface S1DocumentModel {
+  root: string;                        // root node ID
+  nodes: Record<string, S1Node>;
+  metadata: { title?: string; creator?: string; language?: string; /* … */ };
+  styles: Array<{ id: string; name: string; styleType: string; /* … */ }>;
+  sections: Array<{ pageWidth: number; pageHeight: number; /* … */ }>;
+}
 ```
 
-That's the whole public surface. Five functions, five types.
+That's the whole public surface — nine functions plus their supporting
+types. The first five cover bytes-in / bytes-out workflows; `openToModel`
+and `convertModel` expose the structured document for editor consumers.
 
 ## WebAssembly — raw
 
@@ -62,15 +97,19 @@ import init, {
   convert,
   convert_to_string,
   extract_text,
+  open_to_json_string,
+  open_to_json,
+  convert_from_model_string,
+  convert_from_model,
 } from "@schnsrw/core/wasm";
 
 await init();
 const pdf = convert(docxBytes, "docx", "pdf");
 ```
 
-Functions match the TS wrapper one-to-one. The wrapper exists mainly to
-ergonomically auto-init and normalise `Uint8Array` / `ArrayBuffer` / `Blob`
-inputs.
+Functions match the TS wrapper one-to-one (`open_to_json_string` ⇔
+`openToModelString`, etc.). The wrapper exists mainly to ergonomically
+auto-init and normalise `Uint8Array` / `ArrayBuffer` / `Blob` inputs.
 
 ## Rust — `s1engine`
 
@@ -107,5 +146,7 @@ format, etc.). There are no exceptions or panics in library code.
 ## Stability
 
 `0.x` while the API is shaking out. Minor versions may break the public
-surface. Once `1.0` ships, all five JS functions and the Rust `Engine` /
-`Document` / `Format` / `Error` types are frozen.
+surface. Once `1.0` ships, the JS surface (`init`, `convert`,
+`convertToString`, `detectFormat`, `extractText`, `openToModel`,
+`openToModelString`, `convertModel`, `convertModelString`) and the Rust
+`Engine` / `Document` / `Format` / `Error` types are frozen.
