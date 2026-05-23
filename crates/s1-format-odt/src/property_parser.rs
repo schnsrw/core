@@ -109,6 +109,22 @@ pub fn parse_text_properties(e: &BytesStart<'_>) -> AttributeMap {
         }
     }
 
+    // Language: fo:language="en" fo:country="US" → "en-US"
+    if let Some(lang) = get_attr(e, b"language") {
+        if lang != "zxx" && lang != "none" {
+            let tag = if let Some(country) = get_attr(e, b"country") {
+                if country.is_empty() || country == "none" {
+                    lang
+                } else {
+                    format!("{lang}-{country}")
+                }
+            } else {
+                lang
+            };
+            attrs.set(AttributeKey::Language, AttributeValue::String(tag));
+        }
+    }
+
     attrs
 }
 
@@ -350,7 +366,6 @@ fn parse_font_size(s: &str) -> Option<f64> {
 }
 
 /// Parse `<style:table-cell-properties>` attributes.
-#[allow(dead_code)]
 pub fn parse_table_cell_properties(e: &BytesStart<'_>) -> AttributeMap {
     let mut attrs = AttributeMap::new();
 
@@ -375,6 +390,29 @@ pub fn parse_table_cell_properties(e: &BytesStart<'_>) -> AttributeMap {
                 attrs.set(AttributeKey::CellBackground, AttributeValue::Color(color));
             }
         }
+    }
+
+    // Cell borders: fo:border-top, fo:border-bottom, fo:border-left, fo:border-right
+    // Also fo:border shorthand
+    let top = get_attr(e, b"border-top").and_then(|v| parse_border_value(&v));
+    let bottom = get_attr(e, b"border-bottom").and_then(|v| parse_border_value(&v));
+    let left = get_attr(e, b"border-left").and_then(|v| parse_border_value(&v));
+    let right = get_attr(e, b"border-right").and_then(|v| parse_border_value(&v));
+    let all = get_attr(e, b"border").and_then(|v| parse_border_value(&v));
+
+    let borders = Borders {
+        top: top.or_else(|| all.clone()),
+        bottom: bottom.or_else(|| all.clone()),
+        left: left.or_else(|| all.clone()),
+        right: right.or(all),
+    };
+
+    if borders.top.is_some()
+        || borders.bottom.is_some()
+        || borders.left.is_some()
+        || borders.right.is_some()
+    {
+        attrs.set(AttributeKey::CellBorders, AttributeValue::Borders(borders));
     }
 
     attrs

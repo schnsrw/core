@@ -1,8 +1,8 @@
 //! Write s1-model attributes as ODF style property elements.
 
 use s1_model::{
-    Alignment, AttributeKey, AttributeMap, AttributeValue, BorderStyle, LineSpacing, TabAlignment,
-    TabLeader, UnderlineStyle, VerticalAlignment,
+    Alignment, AttributeKey, AttributeMap, AttributeValue, BorderStyle, LineSpacing,
+    TabAlignment, TabLeader, UnderlineStyle, VerticalAlignment,
 };
 
 use crate::xml_util::{escape_xml, points_to_cm};
@@ -59,6 +59,19 @@ pub fn write_text_properties(attrs: &AttributeMap) -> String {
     // Character spacing
     if let Some(pts) = attrs.get_f64(&AttributeKey::FontSpacing) {
         props.push(format!(r#"fo:letter-spacing="{}""#, points_to_cm(pts)));
+    }
+
+    // Language: "en-US" → fo:language="en" fo:country="US"
+    if let Some(lang) = attrs.get_string(&AttributeKey::Language) {
+        let (language, country) = if let Some(pos) = lang.find('-') {
+            (&lang[..pos], &lang[pos + 1..])
+        } else {
+            (lang, "")
+        };
+        props.push(format!(r#"fo:language="{language}""#));
+        if !country.is_empty() {
+            props.push(format!(r#"fo:country="{country}""#));
+        }
     }
 
     if props.is_empty() {
@@ -239,6 +252,22 @@ pub fn write_table_cell_properties(attrs: &AttributeMap) -> String {
     }
     if let Some(color) = attrs.get_color(&AttributeKey::CellBackground) {
         props.push(format!("fo:background-color=\"#{}\"", color.to_hex()));
+    }
+
+    // Cell borders
+    if let Some(AttributeValue::Borders(borders)) = attrs.get(&AttributeKey::CellBorders) {
+        if let Some(ref side) = borders.top {
+            props.push(format!(r#"fo:border-top="{}""#, border_side_to_odf(side)));
+        }
+        if let Some(ref side) = borders.bottom {
+            props.push(format!(r#"fo:border-bottom="{}""#, border_side_to_odf(side)));
+        }
+        if let Some(ref side) = borders.left {
+            props.push(format!(r#"fo:border-left="{}""#, border_side_to_odf(side)));
+        }
+        if let Some(ref side) = borders.right {
+            props.push(format!(r#"fo:border-right="{}""#, border_side_to_odf(side)));
+        }
     }
 
     if props.is_empty() {

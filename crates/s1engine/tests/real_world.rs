@@ -958,6 +958,224 @@ fn large_document_open_performance() {
     }
 }
 
+/// Cross-format fidelity audit: DOCX → ODT → DOCX and ODT → DOCX → ODT.
+///
+/// Runs all eigenpal fixtures through both cross-format round-trips, counts
+/// XML tags in word/document.xml (DOCX side) or content.xml (ODT side), and
+/// prints a concise loss report. Does NOT assert — diagnostic / audit test.
+#[test]
+fn cross_format_fidelity_audit() {
+    use s1engine::{Engine, Format};
+    use std::collections::HashMap;
+
+    // Parse XML and count occurrences of every element name tag.
+    fn count_tags(xml: &str) -> HashMap<String, usize> {
+        let mut counts = HashMap::<String, usize>::new();
+        let mut i = 0usize;
+        let b = xml.as_bytes();
+        while i < b.len() {
+            if b[i] == b'<' {
+                let start = i + 1;
+                if start < b.len() && b[start] != b'/' && b[start] != b'?' && b[start] != b'!' {
+                    let j = b[start..].iter()
+                        .position(|&c| c == b' ' || c == b'>' || c == b'/')
+                        .map(|p| start + p)
+                        .unwrap_or(b.len());
+                    let tag = &xml[start..j];
+                    if !tag.is_empty() {
+                        *counts.entry(tag.to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+            i += 1;
+        }
+        counts
+    }
+
+    fn xml_from_docx(pkg: &s1_ooxml::Package, part: &str) -> String {
+        pkg.parts.get(part).and_then(|p| match &p.content {
+            s1_ooxml::PartContent::Xml(t) => t.write().ok()
+                .and_then(|b| String::from_utf8(b).ok()),
+            _ => None,
+        }).unwrap_or_default()
+    }
+
+    fn xml_from_odt(pkg: &s1_odf::Package, part: &str) -> String {
+        pkg.parts.get(part).and_then(|p| match &p.content {
+            s1_odf::PartContent::Xml(t) => t.write().ok()
+                .and_then(|b| String::from_utf8(b).ok()),
+            _ => None,
+        }).unwrap_or_default()
+    }
+
+    fn tag_loss(orig: &HashMap<String, usize>, round: &HashMap<String, usize>)
+        -> (usize, usize, Vec<(String, usize, usize)>)
+    {
+        let orig_total: usize = orig.values().sum();
+        let round_total: usize = round.values().sum();
+        let mut drops: Vec<(String, usize, usize)> = orig.iter()
+            .filter_map(|(tag, &cnt)| {
+                let r = *round.get(tag).unwrap_or(&0);
+                if r < cnt { Some((tag.clone(), cnt, r)) } else { None }
+            })
+            .collect();
+        drops.sort_by(|a, b| (b.1 - b.2).cmp(&(a.1 - a.2)));
+        (orig_total, round_total, drops)
+    }
+
+    let docx_fixtures_dir = workspace_path("testdocs/docx/eigenpal");
+    let odt_fixtures_dir  = workspace_path("testdocs/odt/samples");
+    let engine = Engine::new();
+
+    // ── DOCX → ODT → DOCX ─────────────────────────────────────────────────
+    eprintln!("\n=== DOCX → ODT → DOCX (all eigenpal fixtures) ===");
+    let mut total_orig = 0usize;
+    let mut total_round = 0usize;
+    let mut fixture_count = 0usize;
+
+    if let Ok(entries) = std::fs::read_dir(&docx_fixtures_dir) {
+        let mut paths: Vec<_> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |e| e == "docx"))
+            .collect();
+        paths.sort();
+
+        for path in &paths {
+            let docx_bytes = match std::fs::read(path) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let orig_pkg = match s1_ooxml::Package::parse(&docx_bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let orig_xml = xml_from_docx(&orig_pkg, "word/document.xml");
+            let orig_counts = count_tags(&orig_xml);
+            let orig_total_tags: usize = orig_counts.values().sum();
+
+            let orig_doc = match engine.open(&docx_bytes) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let odt_bytes = match orig_doc.export(Format::Odt) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let odt_doc = match engine.open_as(&odt_bytes, Format::Odt) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let docx2_bytes = match odt_doc.export(Format::Docx) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let round_pkg = match s1_ooxml::Package::parse(&docx2_bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let round_xml = xml_from_docx(&round_pkg, "word/document.xml");
+            let round_counts = count_tags(&round_xml);
+            let round_total_tags: usize = round_counts.values().sum();
+
+            let (_, _, drops) = tag_loss(&orig_counts, &round_counts);
+            let dropped: usize = drops.iter().map(|(_, o, r)| o - r).sum();
+
+            total_orig += orig_total_tags;
+            total_round += round_total_tags;
+            fixture_count += 1;
+
+            let survival = if orig_total_tags == 0 { 100.0 }
+                else { (orig_total_tags.saturating_sub(dropped)) as f64 / orig_total_tags as f64 * 100.0 };
+
+            let fname = path.file_name().unwrap().to_str().unwrap();
+            eprintln!("  {fname}: {orig_total_tags} → {round_total_tags} tags, -{dropped} dropped ({survival:.0}% survive)");
+            for (tag, orig, round) in drops.iter().take(5) {
+                eprintln!("      {tag}: {orig} → {round}");
+            }
+        }
+    }
+
+    if fixture_count > 0 {
+        let overall_survival = total_round as f64 / total_orig as f64 * 100.0;
+        eprintln!("\nDOCX→ODT→DOCX summary: {fixture_count} fixtures, {total_orig} orig tags → {total_round} round tags ({overall_survival:.1}% raw tag survival)");
+    }
+
+    // ── ODT → DOCX → ODT ─────────────────────────────────────────────────
+    eprintln!("\n=== ODT → DOCX → ODT (testdocs/odt fixtures) ===");
+    let mut total_orig_odt = 0usize;
+    let mut total_round_odt = 0usize;
+    let mut odt_count = 0usize;
+
+    if let Ok(entries) = std::fs::read_dir(&odt_fixtures_dir) {
+        let mut paths: Vec<_> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |e| e == "odt"))
+            .collect();
+        paths.sort();
+
+        for path in &paths {
+            let odt_bytes = match std::fs::read(path) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let orig_pkg = match s1_odf::Package::parse(&odt_bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let orig_xml = xml_from_odt(&orig_pkg, "content.xml");
+            let orig_counts = count_tags(&orig_xml);
+            let orig_total_tags: usize = orig_counts.values().sum();
+
+            let orig_doc = match engine.open_as(&odt_bytes, Format::Odt) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let docx_bytes = match orig_doc.export(Format::Docx) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let docx_doc = match engine.open_as(&docx_bytes, Format::Docx) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let odt2_bytes = match docx_doc.export(Format::Odt) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let round_pkg = match s1_odf::Package::parse(&odt2_bytes) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let round_xml = xml_from_odt(&round_pkg, "content.xml");
+            let round_counts = count_tags(&round_xml);
+            let round_total_tags: usize = round_counts.values().sum();
+
+            let (_, _, drops) = tag_loss(&orig_counts, &round_counts);
+            let dropped: usize = drops.iter().map(|(_, o, r)| o - r).sum();
+
+            total_orig_odt += orig_total_tags;
+            total_round_odt += round_total_tags;
+            odt_count += 1;
+
+            let survival = if orig_total_tags == 0 { 100.0 }
+                else { (orig_total_tags.saturating_sub(dropped)) as f64 / orig_total_tags as f64 * 100.0 };
+
+            let fname = path.file_name().unwrap().to_str().unwrap();
+            eprintln!("  {fname}: {orig_total_tags} → {round_total_tags} tags, -{dropped} dropped ({survival:.0}% survive)");
+            for (tag, orig, round) in drops.iter().take(5) {
+                eprintln!("      {tag}: {orig} → {round}");
+            }
+        }
+    }
+
+    if odt_count > 0 {
+        let overall_survival = total_round_odt as f64 / total_orig_odt as f64 * 100.0;
+        eprintln!("\nODT→DOCX→ODT summary: {odt_count} fixtures, {total_orig_odt} orig tags → {total_round_odt} round tags ({overall_survival:.1}% raw tag survival)");
+    }
+}
+
 #[cfg(all(feature = "pdf", feature = "docx"))]
 #[test]
 fn embedded_fonts_load_into_db() {

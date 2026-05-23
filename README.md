@@ -14,7 +14,7 @@ Casual Core sits underneath everything in Casual Office:
 
 ## Status
 
-`v0.1.0` · pre-release · workspace builds and passes 1,116 tests on CI.
+`v0.1.0` · pre-release · workspace builds and passes 1,133 tests on CI.
 
 | Format | Read | Write |
 | --- | --- | --- |
@@ -51,6 +51,29 @@ Vectors / SVG primitives (20), Runs (8), Fields (5), Soft formatting
 The full per-construct breakdown lives in
 [`docs/fidelity-scorecard.md`](docs/fidelity-scorecard.md) and is
 regenerated on every test run.
+
+### Cross-format round-trip fidelity
+
+Tag-census survival when converting through an intermediate format
+(`crates/s1engine/tests/real_world.rs :: cross_format_fidelity_audit`):
+
+| Path | Fixtures | Raw tag survival |
+| --- | ---: | ---: |
+| DOCX → ODT → DOCX | 34 | **98.2%** |
+| ODT → DOCX → ODT | 3 | **56.1%** |
+
+DOCX→ODT→DOCX is near-lossless after fixes to style-inherited bold/italic
+(`resolve_attributes`), language attributes (`fo:language`/`fo:country`),
+and cell border round-trip via `table-cell-properties` auto-styles.
+
+ODT→DOCX→ODT improvements: paragraph-level text-properties (font name,
+size, color) now propagate to runs at write time so they survive the
+DOCX intermediate; `<w:tblGrid>`/`<table:table-column>` widths now
+round-trip. Remaining loss is largely cosmetic — the source ODT
+contains ~80 named auto-styles that semantically dedupe to ~10 unique
+property blocks; the round-tripped output is functionally equivalent
+but the raw tag census is lower. Tracked under the roadmap ODT
+"named-styles" task.
 
 **Two caveats worth being honest about:**
 
@@ -97,7 +120,7 @@ for the live scorecard.
 
   Live numbers in [`docs/pdf-coverage.md`](docs/pdf-coverage.md);
   roadmap tracking in [`docs/roadmap.md`](docs/roadmap.md).
-- **ODT round-trip fidelity is at parity with DOCX.** No-edits,
+- **ODT same-format round-trip is at parity with DOCX.** No-edits,
   non-body-on-edits, and body-on-edits all at **4 / 4** zero-drop
   (`crates/s1engine/tests/odt_coverage.rs` +
   `crates/s1engine/tests/odt_edit_coverage.rs`). Phase 2b's
@@ -105,9 +128,16 @@ for the live scorecard.
   DOCX shipping path: every drawing, text span, SVG metadata,
   sequence declaration, soft page break, and other inline ODF
   construct inside untouched paragraphs rides through verbatim on
-  edit. Larger / more diverse fixture set is the next coverage
-  expansion (LibreOffice / Calligra-authored docs with charts,
-  forms, math).
+  edit.
+- **ODT→DOCX→ODT cross-format at 56.1%** — the remaining loss is
+  largely auto-style deduplication (source ODT files often emit one
+  unique-named auto-style per paragraph even when bodies match;
+  Casual Core deduplicates these to ~10 unique style blocks). Body
+  content, font/size/color, language, cell borders, and column
+  widths all survive. Tracked on the roadmap as "ODT auto-style
+  fidelity preservation". Larger / more diverse fixture set is the
+  next coverage expansion (LibreOffice / Calligra-authored docs with
+  charts, forms, math).
 
 ## Quick start — JavaScript
 
@@ -123,7 +153,18 @@ const docx = await fetch("/cv.docx").then((r) => r.arrayBuffer());
 const pdf  = await convert(new Uint8Array(docx), { to: "pdf" });
 ```
 
-The full JS surface (five functions) is in [`docs/api.md`](docs/api.md).
+Open a document as a structured JSON model (Phase B surface):
+
+```ts
+import { init, openToModel } from "@schnsrw/core";
+
+await init();
+const docx = await fetch("/report.docx").then((r) => r.arrayBuffer());
+const model = await openToModel(new Uint8Array(docx), "docx");
+// model.nodes["0:1"].nodeType === "paragraph"
+```
+
+The full JS surface is in [`docs/api.md`](docs/api.md).
 
 ## Quick start — Rust
 

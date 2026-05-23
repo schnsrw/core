@@ -801,6 +801,43 @@ fn parse_ppr_child_empty(e: &quick_xml::events::BytesStart<'_>, attrs: &mut Attr
     }
 }
 
+/// Parse `<w:tblGrid>` and return the column widths in points (twips ÷ 20).
+fn parse_table_grid(reader: &mut Reader<&[u8]>) -> Result<Vec<f64>, DocxError> {
+    let mut widths = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Empty(e)) if e.local_name().as_ref() == b"gridCol" => {
+                for attr in e.attributes().flatten() {
+                    if attr.key.local_name().as_ref() == b"w" {
+                        if let Ok(s) = std::str::from_utf8(&attr.value) {
+                            if let Ok(twips) = s.parse::<f64>() {
+                                widths.push(twips / 20.0);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"gridCol" => {
+                for attr in e.attributes().flatten() {
+                    if attr.key.local_name().as_ref() == b"w" {
+                        if let Ok(s) = std::str::from_utf8(&attr.value) {
+                            if let Ok(twips) = s.parse::<f64>() {
+                                widths.push(twips / 20.0);
+                            }
+                        }
+                    }
+                }
+                skip_element(reader)?;
+            }
+            Ok(Event::End(e)) if e.local_name().as_ref() == b"tblGrid" => break,
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(DocxError::Xml(format!("{e}"))),
+            _ => {}
+        }
+    }
+    Ok(widths)
+}
+
 /// Parse `<w:tbl>` — a table.
 fn parse_table(
     reader: &mut Reader<&[u8]>,
@@ -829,7 +866,17 @@ fn parse_table(
                     }
                 }
                 b"tblGrid" => {
-                    skip_element(reader)?;
+                    let widths = parse_table_grid(reader)?;
+                    if !widths.is_empty() {
+                        if let Some(node) = doc.node_mut(table_id) {
+                            let joined: Vec<String> =
+                                widths.iter().map(|w| format!("{w:.2}pt")).collect();
+                            node.attributes.set(
+                                s1_model::AttributeKey::TableColumnWidths,
+                                s1_model::AttributeValue::String(joined.join(",")),
+                            );
+                        }
+                    }
                 }
                 b"tr" => {
                     parse_table_row(reader, doc, table_id, row_index, ctx)?;

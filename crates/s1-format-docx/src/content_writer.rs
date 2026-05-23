@@ -519,8 +519,13 @@ fn write_table(
         xml.push_str("</w:tblPr>");
     }
 
-    // Table grid — derive from first row's cell widths
+    // Table grid — derive from first row's cell widths or table-level widths
     write_table_grid(doc, table, xml);
+
+    // Resolve per-column widths (twips) for cell-level w:tcW fallback when
+    // cells don't carry CellWidth (e.g. after an ODT round-trip where widths
+    // are at the column level).
+    let col_widths_twips = resolve_column_widths_twips(doc, table);
 
     // Rows
     let children: Vec<NodeId> = table.children.clone();
@@ -530,11 +535,79 @@ fn write_table(
             None => continue,
         };
         if child.node_type == NodeType::TableRow {
-            write_table_row(doc, child_id, xml, image_rels, hyperlink_rels);
+            write_table_row(
+                doc,
+                child_id,
+                xml,
+                image_rels,
+                hyperlink_rels,
+                &col_widths_twips,
+            );
         }
     }
 
     xml.push_str("</w:tbl>");
+}
+
+/// Compute per-column widths in twips from cells of first row, or table-level
+/// `TableColumnWidths`. Returns empty if neither source has widths.
+fn resolve_column_widths_twips(doc: &DocumentModel, table: &s1_model::Node) -> Vec<i64> {
+    let first_row = match table
+        .children
+        .first()
+        .and_then(|&id| doc.node(id))
+        .filter(|n| n.node_type == NodeType::TableRow)
+    {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let col_count = first_row
+        .children
+        .iter()
+        .filter(|&&id| {
+            doc.node(id)
+                .is_some_and(|n| n.node_type == NodeType::TableCell)
+        })
+        .count();
+    if col_count == 0 {
+        return Vec::new();
+    }
+
+    let mut widths: Vec<i64> = vec![0; col_count];
+    let mut any = false;
+    for (idx, &cell_id) in first_row.children.iter().enumerate() {
+        if idx >= col_count {
+            break;
+        }
+        if let Some(cell) = doc.node(cell_id) {
+            if let Some(AttributeValue::TableWidth(TableWidth::Fixed(pts))) =
+                cell.attributes.get(&AttributeKey::CellWidth)
+            {
+                widths[idx] = points_to_twips(*pts);
+                any = true;
+            }
+        }
+    }
+    if !any {
+        if let Some(s) = table.attributes.get_string(&AttributeKey::TableColumnWidths) {
+            for (idx, part) in s.split(',').enumerate() {
+                if idx >= col_count {
+                    break;
+                }
+                let t = part.trim();
+                let num = t.strip_suffix("pt").unwrap_or(t);
+                if let Ok(pts) = num.parse::<f64>() {
+                    widths[idx] = points_to_twips(pts);
+                    any = true;
+                }
+            }
+        }
+    }
+    if any {
+        widths
+    } else {
+        Vec::new()
+    }
 }
 
 /// Write `<w:tblGrid>` derived from the first row's cell widths.
@@ -565,6 +638,25 @@ fn write_table_grid(doc: &DocumentModel, table: &s1_model::Node, xml: &mut Strin
                 }
             } else {
                 grid_cols.push(0);
+            }
+        }
+    }
+
+    // Fall back to table-level column widths (set by the ODT reader from
+    // `table-column-properties`) when cells don't carry explicit widths.
+    if !has_widths {
+        if let Some(widths_str) = table.attributes.get_string(&AttributeKey::TableColumnWidths) {
+            let parsed: Vec<i64> = widths_str
+                .split(',')
+                .filter_map(|s| {
+                    let s = s.trim();
+                    let s = s.strip_suffix("pt").unwrap_or(s);
+                    s.parse::<f64>().ok().map(points_to_twips)
+                })
+                .collect();
+            if !parsed.is_empty() && parsed.len() == grid_cols.len() {
+                grid_cols = parsed;
+                has_widths = true;
             }
         }
     }
@@ -642,6 +734,7 @@ fn write_table_row(
     xml: &mut String,
     image_rels: &mut Vec<ImageRelEntry>,
     hyperlink_rels: &mut Vec<HyperlinkRelEntry>,
+    col_widths_twips: &[i64],
 ) {
     let row = match doc.node(row_id) {
         Some(n) => n,
@@ -659,13 +752,16 @@ fn write_table_row(
     }
 
     let children: Vec<NodeId> = row.children.clone();
+    let mut col_idx = 0usize;
     for child_id in children {
         let child = match doc.node(child_id) {
             Some(n) => n,
             None => continue,
         };
         if child.node_type == NodeType::TableCell {
-            write_table_cell(doc, child_id, xml, image_rels, hyperlink_rels);
+            let fallback = col_widths_twips.get(col_idx).copied().filter(|&w| w > 0);
+            write_table_cell(doc, child_id, xml, image_rels, hyperlink_rels, fallback);
+            col_idx += 1;
         }
     }
 
@@ -679,6 +775,7 @@ fn write_table_cell(
     xml: &mut String,
     image_rels: &mut Vec<ImageRelEntry>,
     hyperlink_rels: &mut Vec<HyperlinkRelEntry>,
+    fallback_width_twips: Option<i64>,
 ) {
     let cell = match doc.node(cell_id) {
         Some(n) => n,
@@ -687,8 +784,17 @@ fn write_table_cell(
 
     xml.push_str("<w:tc>");
 
-    // Cell properties
-    let tcp = write_cell_properties(&cell.attributes);
+    // Cell properties — if the model carries no CellWidth, fall back to the
+    // table grid's column width so DOCX consumers still see <w:tcW>.
+    let mut tcp = write_cell_properties(&cell.attributes);
+    if !cell.attributes.contains(&AttributeKey::CellWidth) {
+        if let Some(twips) = fallback_width_twips {
+            tcp.insert_str(
+                0,
+                &format!(r#"<w:tcW w:w="{twips}" w:type="dxa"/>"#),
+            );
+        }
+    }
     if !tcp.is_empty() {
         xml.push_str("<w:tcPr>");
         xml.push_str(&tcp);
@@ -1296,7 +1402,7 @@ fn write_run(doc: &DocumentModel, run_id: NodeId, xml: &mut String) {
     xml.push_str("<w:r>");
 
     // Run properties (includes rPrChange for FormatChange revisions)
-    let rpr = write_run_properties(run);
+    let rpr = write_run_properties_inherited(doc, run_id);
     if !rpr.is_empty() {
         xml.push_str("<w:rPr>");
         xml.push_str(&rpr);
@@ -1324,10 +1430,66 @@ fn write_run(doc: &DocumentModel, run_id: NodeId, xml: &mut String) {
     xml.push_str("</w:r>");
 }
 
-/// Generate run properties XML from a Node.
-fn write_run_properties(run: &s1_model::Node) -> String {
-    write_run_properties_from_attrs(&run.attributes)
+/// Generate run properties XML from a Node, inheriting text-level paragraph
+/// defaults from the nearest paragraph ancestor.
+///
+/// ODT auto-styles often place text-level properties (font name, size, color)
+/// on the paragraph style; when we parse that into the model they end up on
+/// the paragraph node's attributes. DOCX semantics require those attributes
+/// on the run itself for the formatting to apply to text. This helper walks
+/// up to the paragraph ancestor and merges its text-level attributes as
+/// defaults (run direct attrs still win).
+fn write_run_properties_inherited(doc: &DocumentModel, run_id: NodeId) -> String {
+    let run = match doc.node(run_id) {
+        Some(n) => n,
+        None => return String::new(),
+    };
+    let defaults = paragraph_text_defaults(doc, run_id);
+    if defaults.is_empty() {
+        return write_run_properties_from_attrs(&run.attributes);
+    }
+    let mut merged = defaults;
+    merged.merge(&run.attributes);
+    write_run_properties_from_attrs(&merged)
 }
+
+/// Collect text-level attributes from the nearest paragraph ancestor.
+fn paragraph_text_defaults(doc: &DocumentModel, run_id: NodeId) -> s1_model::AttributeMap {
+    let mut out = s1_model::AttributeMap::new();
+    let mut cur = doc.node(run_id).and_then(|n| n.parent);
+    while let Some(id) = cur {
+        let node = match doc.node(id) {
+            Some(n) => n,
+            None => break,
+        };
+        if node.node_type == NodeType::Paragraph {
+            for key in TEXT_LEVEL_KEYS {
+                if let Some(v) = node.attributes.get(key) {
+                    out.set(key.clone(), v.clone());
+                }
+            }
+            break;
+        }
+        cur = node.parent;
+    }
+    out
+}
+
+const TEXT_LEVEL_KEYS: &[AttributeKey] = &[
+    AttributeKey::FontFamily,
+    AttributeKey::FontSize,
+    AttributeKey::Bold,
+    AttributeKey::Italic,
+    AttributeKey::Strikethrough,
+    AttributeKey::Underline,
+    AttributeKey::Color,
+    AttributeKey::HighlightColor,
+    AttributeKey::Superscript,
+    AttributeKey::Subscript,
+    AttributeKey::TextShadow,
+    AttributeKey::TextOutline,
+    AttributeKey::Language,
+];
 
 /// Generate run properties XML from an AttributeMap.
 ///

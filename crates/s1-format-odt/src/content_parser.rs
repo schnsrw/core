@@ -1622,15 +1622,15 @@ fn parse_table_cell_into(
     if let Some(style_name) = get_attr(start, b"style-name") {
         if let Some(auto_attrs) = ctx.auto_styles.get(&style_name) {
             // Extract cell-relevant attributes
-            if let Some(va) = auto_attrs.get(&AttributeKey::VerticalAlign) {
-                cell_node
-                    .attributes
-                    .set(AttributeKey::VerticalAlign, va.clone());
-            }
-            if let Some(bg) = auto_attrs.get(&AttributeKey::CellBackground) {
-                cell_node
-                    .attributes
-                    .set(AttributeKey::CellBackground, bg.clone());
+            for key in &[
+                AttributeKey::VerticalAlign,
+                AttributeKey::CellBackground,
+                AttributeKey::CellBorders,
+                AttributeKey::CellWidth,
+            ] {
+                if let Some(val) = auto_attrs.get(key) {
+                    cell_node.attributes.set(key.clone(), val.clone());
+                }
             }
         }
     }

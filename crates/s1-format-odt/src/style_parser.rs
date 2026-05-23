@@ -8,7 +8,8 @@ use s1_model::{AttributeMap, DocumentModel, Style, StyleType};
 
 use crate::error::OdtError;
 use crate::property_parser::{
-    parse_paragraph_properties, parse_paragraph_properties_children, parse_text_properties,
+    parse_paragraph_properties, parse_paragraph_properties_children, parse_table_cell_properties,
+    parse_text_properties,
 };
 use crate::xml_util::{get_attr, parse_length};
 
@@ -177,6 +178,10 @@ pub fn parse_automatic_styles(
                                     }
                                     skip_to_end(reader, b"table-column-properties")?;
                                 }
+                                b"table-cell-properties" => {
+                                    attrs.merge(&parse_table_cell_properties(pe));
+                                    skip_to_end(reader, b"table-cell-properties")?;
+                                }
                                 _ => {}
                             }
                         }
@@ -199,6 +204,9 @@ pub fn parse_automatic_styles(
                                             s1_model::AttributeValue::Float(w),
                                         );
                                     }
+                                }
+                                b"table-cell-properties" => {
+                                    attrs.merge(&parse_table_cell_properties(pe));
                                 }
                                 _ => {}
                             }

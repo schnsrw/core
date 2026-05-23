@@ -16,9 +16,25 @@
  */
 
 import { loadWasm } from "./loader.js";
-import type { ConvertOptions, DetectedFormat, Format, InitOptions } from "./types.js";
+import type {
+  ConvertOptions,
+  DetectedFormat,
+  Format,
+  InitOptions,
+  S1DocumentModel,
+} from "./types.js";
 
-export type { ConvertOptions, DetectedFormat, Format, InitOptions } from "./types.js";
+export type {
+  ConvertOptions,
+  DetectedFormat,
+  Format,
+  InitOptions,
+  S1DocumentModel,
+  S1Metadata,
+  S1Node,
+  S1Section,
+  S1Style,
+} from "./types.js";
 
 /** Initialise the WASM engine. Call once. Subsequent calls are no-ops. */
 export async function init(opts: InitOptions = {}): Promise<void> {
@@ -75,6 +91,35 @@ export async function extractText(
   return wasm.extract_text(bytes, from ?? "");
 }
 
+/**
+ * Parse a document and return its structural model as a parsed object.
+ *
+ * Internally calls `open_to_json_string` (one WASM call, string transfer)
+ * and parses the result with `JSON.parse`.
+ */
+export async function openToModel(
+  input: Uint8Array | ArrayBuffer | Blob,
+  from?: Format,
+): Promise<S1DocumentModel> {
+  const s = await openToModelString(input, from);
+  return JSON.parse(s) as S1DocumentModel;
+}
+
+/**
+ * Parse a document and return its structural model as a raw JSON string.
+ *
+ * Useful when you want to post the payload to a Worker, store it, or parse
+ * it yourself. Cheaper than `openToModel` when you don't need the JS object.
+ */
+export async function openToModelString(
+  input: Uint8Array | ArrayBuffer | Blob,
+  from?: Format,
+): Promise<string> {
+  const bytes = await toBytes(input);
+  const wasm = (await loadWasm()) as WasmModule;
+  return wasm.open_to_json_string(bytes, from ?? "");
+}
+
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
@@ -93,4 +138,6 @@ interface WasmModule {
   convert(bytes: Uint8Array, from: string, to: string): Uint8Array;
   convert_to_string(bytes: Uint8Array, from: string, to: string): string;
   extract_text(bytes: Uint8Array, from: string): string;
+  open_to_json_string(bytes: Uint8Array, from: string): string;
+  open_to_json(bytes: Uint8Array, from: string): unknown;
 }

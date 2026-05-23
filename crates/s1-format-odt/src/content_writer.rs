@@ -679,7 +679,10 @@ fn write_run(
         None => return,
     };
 
-    let text_props = write_text_properties(&run.attributes);
+    // Use resolved attributes so style-inherited formatting (bold via paragraph style,
+    // font size from named style, etc.) survives cross-format conversion.
+    let resolved = doc.resolve_attributes(run_id);
+    let text_props = write_text_properties(&resolved);
     let has_formatting = !text_props.is_empty();
 
     if has_formatting {
@@ -750,7 +753,51 @@ fn write_text_with_breaks(text: &str, xml: &mut String) {
             if i > 0 {
                 xml.push_str("<text:tab/>");
             }
-            xml.push_str(&escape_xml(part));
+            write_text_preserve_spaces(part, xml);
+        }
+    }
+}
+
+/// Emit text while preserving consecutive-space runs via `<text:s c="N"/>`.
+///
+/// ODF §6.1.3: sequences of two or more spaces, leading spaces, and trailing
+/// spaces are encoded with `<text:s>` to survive XML whitespace collapsing.
+fn write_text_preserve_spaces(s: &str, xml: &mut String) {
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == ' ' {
+            let start = i;
+            while i < chars.len() && chars[i] == ' ' {
+                i += 1;
+            }
+            let count = i - start;
+            // Keep a single inter-word space as a literal; encode the rest.
+            let leading = start == 0;
+            let trailing = i == chars.len();
+            if count == 1 && !leading && !trailing {
+                xml.push(' ');
+            } else {
+                let mut left = count;
+                if !leading && !trailing {
+                    xml.push(' ');
+                    left -= 1;
+                }
+                if left > 0 {
+                    if left == 1 {
+                        xml.push_str(r#"<text:s/>"#);
+                    } else {
+                        xml.push_str(&format!(r#"<text:s text:c="{left}"/>"#));
+                    }
+                }
+            }
+        } else {
+            let start = i;
+            while i < chars.len() && chars[i] != ' ' {
+                i += 1;
+            }
+            let segment: String = chars[start..i].iter().collect();
+            xml.push_str(&escape_xml(&segment));
         }
     }
 }
@@ -931,10 +978,72 @@ fn write_table(
         .unwrap_or(0);
 
     if col_count > 0 {
-        xml.push_str(&format!(
-            r#"<table:table-column table:number-columns-repeated="{}"/>"#,
-            col_count
-        ));
+        let mut col_widths: Vec<Option<f64>> = vec![None; col_count];
+        if let Some(first_row) = table
+            .children
+            .iter()
+            .filter_map(|&row_id| doc.node(row_id))
+            .find(|n| n.node_type == NodeType::TableRow)
+        {
+            for (idx, &cell_id) in first_row.children.iter().enumerate() {
+                if idx >= col_count {
+                    break;
+                }
+                if let Some(cell) = doc.node(cell_id) {
+                    if let Some(AttributeValue::TableWidth(tw)) =
+                        cell.attributes.get(&AttributeKey::CellWidth)
+                    {
+                        if let s1_model::TableWidth::Fixed(pts) = tw {
+                            col_widths[idx] = Some(*pts);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fall back: read comma-separated column widths from the table node
+        // (set by the ODT reader from `<table:table-column>` references) or
+        // from the DOCX reader's `<w:gridCol>` extraction.
+        if col_widths.iter().all(|w| w.is_none()) {
+            if let Some(widths_str) = table.attributes.get_string(&AttributeKey::TableColumnWidths)
+            {
+                for (idx, part) in widths_str.split(',').enumerate() {
+                    if idx >= col_count {
+                        break;
+                    }
+                    let t = part.trim();
+                    let num = t.strip_suffix("pt").unwrap_or(t);
+                    if let Ok(pts) = num.parse::<f64>() {
+                        col_widths[idx] = Some(pts);
+                    }
+                }
+            }
+        }
+
+        if col_widths.iter().any(|w| w.is_some()) {
+            for w in &col_widths {
+                let cm = w
+                    .map(points_to_cm)
+                    .unwrap_or_else(|| "2.000cm".to_string());
+                let key = AutoStyleKey {
+                    text_props: String::new(),
+                    para_props: String::new(),
+                    cell_props: format!(
+                        r#"<style:table-column-properties style:column-width="{cm}"/>"#
+                    ),
+                    family: "table-column".to_string(),
+                };
+                let name = get_or_create_auto_style(auto_styles, counter, key);
+                xml.push_str(&format!(
+                    r#"<table:table-column table:style-name="{name}"/>"#
+                ));
+            }
+        } else {
+            xml.push_str(&format!(
+                r#"<table:table-column table:number-columns-repeated="{}"/>"#,
+                col_count
+            ));
+        }
     }
 
     for &row_id in &table.children {

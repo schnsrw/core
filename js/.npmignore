@@ -1,0 +1,9 @@
+# Whitelist controlled by package.json `files`. This .npmignore exists
+# only so npm pack doesn't fall back to the root .gitignore (which
+# excludes js/wasm/ to keep generated wasm-bindgen output out of git).
+
+node_modules
+src
+tsconfig.json
+*.test.ts
+.DS_Store
