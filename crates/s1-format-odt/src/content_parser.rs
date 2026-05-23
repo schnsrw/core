@@ -1476,7 +1476,7 @@ fn parse_table_into(
                 let local = e.local_name();
                 match local.as_ref() {
                     b"table-row" => {
-                        parse_table_row_into(reader, doc, ctx, table_id, row_index)?;
+                        parse_table_row_into(reader, doc, e, ctx, table_id, row_index)?;
                         row_index += 1;
                     }
                     b"table-column" => {
@@ -1550,12 +1550,22 @@ fn parse_table_into(
 fn parse_table_row_into(
     reader: &mut Reader<&[u8]>,
     doc: &mut DocumentModel,
+    start: &quick_xml::events::BytesStart<'_>,
     ctx: &ParseContext,
     table_id: s1_model::NodeId,
     index: usize,
 ) -> Result<s1_model::NodeId, OdtError> {
     let row_id = doc.next_id();
-    let row_node = Node::new(row_id, NodeType::TableRow);
+    let mut row_node = Node::new(row_id, NodeType::TableRow);
+    if let Some(style_name) = get_attr(start, b"style-name") {
+        if let Some(auto_attrs) = ctx.auto_styles.get(&style_name) {
+            for key in &[AttributeKey::RowHeight, AttributeKey::MinRowHeight] {
+                if let Some(v) = auto_attrs.get(key) {
+                    row_node.attributes.set(key.clone(), v.clone());
+                }
+            }
+        }
+    }
     doc.insert_node(table_id, index, row_node)
         .map_err(|e| OdtError::InvalidStructure(format!("{e:?}")))?;
 

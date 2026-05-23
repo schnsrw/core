@@ -276,6 +276,23 @@ fn write_table(doc: &DocumentModel, table_id: NodeId, out: &mut String) {
     };
 
     let rows: Vec<NodeId> = table.children.clone();
+    // Collect per-column alignment from the header row's cell paragraphs.
+    let header_alignments: Vec<Option<s1_model::Alignment>> = rows
+        .first()
+        .and_then(|&id| doc.node(id))
+        .map(|row| {
+            row.children
+                .iter()
+                .map(|&cell_id| {
+                    doc.node(cell_id)
+                        .and_then(|cell| cell.children.first().copied())
+                        .and_then(|para_id| doc.node(para_id))
+                        .and_then(|para| para.attributes.get_alignment(&AttributeKey::Alignment))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     for (row_idx, &row_id) in rows.iter().enumerate() {
         let row = match doc.node(row_id) {
             Some(n) => n,
@@ -287,36 +304,70 @@ fn write_table(doc: &DocumentModel, table_id: NodeId, out: &mut String) {
         for &cell_id in &cells {
             out.push(' ');
             let mut cell_text = String::new();
-            write_cell_text(doc, cell_id, &mut cell_text);
-            out.push_str(cell_text.trim());
+            write_cell_inline(doc, cell_id, &mut cell_text);
+            let trimmed = cell_text.trim();
+            // Escape any '|' inside cell text per GFM spec
+            for ch in trimmed.chars() {
+                if ch == '|' {
+                    out.push('\\');
+                    out.push('|');
+                } else if ch == '\n' || ch == '\r' {
+                    out.push(' ');
+                } else {
+                    out.push(ch);
+                }
+            }
             out.push_str(" |");
         }
         out.push('\n');
 
-        // After header row, add separator
+        // After header row, add alignment-aware separator row.
         if row_idx == 0 {
             out.push('|');
-            for _ in &cells {
-                out.push_str("---|");
+            for idx in 0..cells.len() {
+                let sep = match header_alignments.get(idx).copied().flatten() {
+                    Some(s1_model::Alignment::Left) => ":---|",
+                    Some(s1_model::Alignment::Center) => ":---:|",
+                    Some(s1_model::Alignment::Right) => "---:|",
+                    _ => "---|",
+                };
+                out.push_str(sep);
             }
             out.push('\n');
         }
     }
 }
 
-fn write_cell_text(doc: &DocumentModel, node_id: NodeId, out: &mut String) {
+/// Render cell content with inline Markdown formatting (bold, italic, links, code).
+fn write_cell_inline(doc: &DocumentModel, node_id: NodeId, out: &mut String) {
     let node = match doc.node(node_id) {
         Some(n) => n,
         None => return,
     };
 
-    if let Some(text) = &node.text_content {
-        out.push_str(text);
-    }
-
-    let children: Vec<NodeId> = node.children.clone();
-    for &child_id in &children {
-        write_cell_text(doc, child_id, out);
+    match node.node_type {
+        NodeType::TableCell | NodeType::Paragraph => {
+            let children: Vec<NodeId> = node.children.clone();
+            for &child_id in &children {
+                write_cell_inline(doc, child_id, out);
+            }
+        }
+        NodeType::Run => {
+            // Reuse the inline writer's formatting logic by piping it through a
+            // local buffer; this preserves bold/italic/code/link markers.
+            write_inline(doc, node_id, out);
+        }
+        NodeType::Text => {
+            if let Some(text) = &node.text_content {
+                out.push_str(text);
+            }
+        }
+        _ => {
+            let children: Vec<NodeId> = node.children.clone();
+            for &child_id in &children {
+                write_cell_inline(doc, child_id, out);
+            }
+        }
     }
 }
 

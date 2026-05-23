@@ -915,6 +915,15 @@ fn write_row_properties(attrs: &s1_model::AttributeMap) -> String {
         trp.push_str("<w:tblHeader/>");
     }
 
+    // Row height (exact via RowHeight; minimum via MinRowHeight)
+    if let Some(pts) = attrs.get_f64(&AttributeKey::RowHeight) {
+        let twips = points_to_twips(pts);
+        trp.push_str(&format!(r#"<w:trHeight w:val="{twips}" w:hRule="exact"/>"#));
+    } else if let Some(pts) = attrs.get_f64(&AttributeKey::MinRowHeight) {
+        let twips = points_to_twips(pts);
+        trp.push_str(&format!(r#"<w:trHeight w:val="{twips}" w:hRule="atLeast"/>"#));
+    }
+
     // Row property change tracking (trPrChange)
     if attrs.get_string(&AttributeKey::RevisionType) == Some("PropertyChange") {
         write_property_change_element("trPrChange", "trPr", attrs, &mut trp);

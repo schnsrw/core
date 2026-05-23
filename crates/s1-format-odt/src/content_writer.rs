@@ -1052,7 +1052,10 @@ fn write_table(
             _ => continue,
         };
 
-        xml.push_str("<table:table-row>");
+        let row_style_attr = get_or_create_row_auto_style(&row.attributes, auto_styles, counter)
+            .map(|n| format!(r#" table:style-name="{n}""#))
+            .unwrap_or_default();
+        xml.push_str(&format!("<table:table-row{row_style_attr}>"));
 
         for &cell_id in &row.children {
             let cell = match doc.node(cell_id) {
@@ -1197,6 +1200,34 @@ fn get_or_create_cell_auto_style(
         .clone();
 
     Some(name)
+}
+
+/// Get or create a table-row auto-style. Returns `None` if no row formatting.
+fn get_or_create_row_auto_style(
+    attrs: &AttributeMap,
+    auto_styles: &mut HashMap<AutoStyleKey, String>,
+    counter: &mut u32,
+) -> Option<String> {
+    let row_height = attrs.get_f64(&AttributeKey::RowHeight);
+    let min_height = attrs.get_f64(&AttributeKey::MinRowHeight);
+    if row_height.is_none() && min_height.is_none() {
+        return None;
+    }
+    let mut props = String::from("<style:table-row-properties");
+    if let Some(h) = row_height {
+        props.push_str(&format!(r#" style:row-height="{}""#, points_to_cm(h)));
+    } else if let Some(h) = min_height {
+        props.push_str(&format!(r#" style:min-row-height="{}""#, points_to_cm(h)));
+    }
+    props.push_str("/>");
+
+    let key = AutoStyleKey {
+        text_props: String::new(),
+        para_props: String::new(),
+        cell_props: props,
+        family: "table-row".to_string(),
+    };
+    Some(get_or_create_auto_style(auto_styles, counter, key))
 }
 
 #[cfg(test)]

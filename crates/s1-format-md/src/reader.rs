@@ -2,9 +2,10 @@
 //!
 //! Converts a Markdown string into a [`DocumentModel`].
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment as CmAlignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use s1_model::{
-    AttributeKey, AttributeValue, DocumentModel, ListFormat, ListInfo, Node, NodeId, NodeType,
+    Alignment, AttributeKey, AttributeValue, DocumentModel, ListFormat, ListInfo, Node, NodeId,
+    NodeType,
 };
 
 use crate::MdError;
@@ -37,6 +38,7 @@ pub fn read(input: &str) -> Result<DocumentModel, MdError> {
         row_child_index: 0,
         cell_para_id: None,
         cell_child_index: 0,
+        table_alignments: Vec::new(),
     };
 
     for event in parser {
@@ -64,6 +66,7 @@ struct ReadContext {
     row_child_index: usize,
     cell_para_id: Option<NodeId>,
     cell_child_index: usize,
+    table_alignments: Vec<CmAlignment>,
 }
 
 struct ListState {
@@ -192,7 +195,7 @@ fn process_event(
                 ctx.container_stack
                     .push((ctx.body_id, ctx.body_child_index));
             }
-            Tag::Table(_alignments) => {
+            Tag::Table(alignments) => {
                 let table_id = doc.next_id();
                 insert_node(
                     doc,
@@ -205,6 +208,7 @@ fn process_event(
                 ctx.in_table = true;
                 ctx.table_id = Some(table_id);
                 ctx.table_child_index = 0;
+                ctx.table_alignments = alignments;
             }
             Tag::TableHead => {
                 if let Some(table_id) = ctx.table_id {
@@ -238,11 +242,12 @@ fn process_event(
             }
             Tag::TableCell => {
                 if let Some(row_id) = ctx.table_row_id {
+                    let col_idx = ctx.row_child_index;
                     let cell_id = doc.next_id();
                     insert_node(
                         doc,
                         row_id,
-                        ctx.row_child_index,
+                        col_idx,
                         cell_id,
                         NodeType::TableCell,
                     )?;
@@ -250,6 +255,21 @@ fn process_event(
 
                     let para_id = doc.next_id();
                     insert_node(doc, cell_id, 0, para_id, NodeType::Paragraph)?;
+                    // Apply column alignment (set on header row only)
+                    if let Some(cm_align) = ctx.table_alignments.get(col_idx) {
+                        let align = match cm_align {
+                            CmAlignment::Left => Some(Alignment::Left),
+                            CmAlignment::Center => Some(Alignment::Center),
+                            CmAlignment::Right => Some(Alignment::Right),
+                            CmAlignment::None => None,
+                        };
+                        if let Some(a) = align {
+                            if let Some(node) = doc.node_mut(para_id) {
+                                node.attributes
+                                    .set(AttributeKey::Alignment, AttributeValue::Alignment(a));
+                            }
+                        }
+                    }
                     ctx.cell_para_id = Some(para_id);
                     ctx.cell_child_index = 0;
                 }

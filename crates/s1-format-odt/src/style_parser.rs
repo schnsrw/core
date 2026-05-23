@@ -9,7 +9,7 @@ use s1_model::{AttributeMap, DocumentModel, Style, StyleType};
 use crate::error::OdtError;
 use crate::property_parser::{
     parse_paragraph_properties, parse_paragraph_properties_children, parse_table_cell_properties,
-    parse_text_properties,
+    parse_table_row_properties, parse_text_properties,
 };
 use crate::xml_util::{get_attr, parse_length};
 
@@ -182,6 +182,10 @@ pub fn parse_automatic_styles(
                                     attrs.merge(&parse_table_cell_properties(pe));
                                     skip_to_end(reader, b"table-cell-properties")?;
                                 }
+                                b"table-row-properties" => {
+                                    attrs.merge(&parse_table_row_properties(pe));
+                                    skip_to_end(reader, b"table-row-properties")?;
+                                }
                                 _ => {}
                             }
                         }
@@ -207,6 +211,9 @@ pub fn parse_automatic_styles(
                                 }
                                 b"table-cell-properties" => {
                                     attrs.merge(&parse_table_cell_properties(pe));
+                                }
+                                b"table-row-properties" => {
+                                    attrs.merge(&parse_table_row_properties(pe));
                                 }
                                 _ => {}
                             }

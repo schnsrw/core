@@ -365,6 +365,17 @@ fn parse_font_size(s: &str) -> Option<f64> {
     parse_length(s)
 }
 
+/// Parse `<style:table-row-properties>` attributes — height info only.
+pub fn parse_table_row_properties(e: &BytesStart<'_>) -> AttributeMap {
+    let mut attrs = AttributeMap::new();
+    if let Some(h) = get_attr(e, b"row-height").and_then(|v| parse_length(&v)) {
+        attrs.set(AttributeKey::RowHeight, AttributeValue::Float(h));
+    } else if let Some(h) = get_attr(e, b"min-row-height").and_then(|v| parse_length(&v)) {
+        attrs.set(AttributeKey::MinRowHeight, AttributeValue::Float(h));
+    }
+    attrs
+}
+
 /// Parse `<style:table-cell-properties>` attributes.
 pub fn parse_table_cell_properties(e: &BytesStart<'_>) -> AttributeMap {
     let mut attrs = AttributeMap::new();

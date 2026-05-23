@@ -306,6 +306,10 @@ pub enum AttributeKey {
     /// Marks a table row as a header row that should repeat on continuation pages.
     TableHeaderRow,
 
+    /// Row height in points. `MinRowHeight` allows growth; `RowHeight` is exact.
+    RowHeight,
+    MinRowHeight,
+
     // Cell attributes
     CellWidth,
     VerticalAlign,
