@@ -14,7 +14,7 @@ Casual Core sits underneath everything in Casual Office:
 
 ## Status
 
-`v0.1.0` · pre-release · workspace builds and passes 1,133 tests on CI.
+`v0.1.0` · pre-release · workspace builds and passes 1,135 tests on CI.
 
 | Format | Read | Write |
 | --- | --- | --- |
@@ -153,15 +153,19 @@ const docx = await fetch("/cv.docx").then((r) => r.arrayBuffer());
 const pdf  = await convert(new Uint8Array(docx), { to: "pdf" });
 ```
 
-Open a document as a structured JSON model (Phase B surface):
+Open a document as a structured JSON model, mutate it, write back to bytes
+(Phase B + Phase C surface):
 
 ```ts
-import { init, openToModel } from "@schnsrw/core";
+import { init, openToModel, convertModel } from "@schnsrw/core";
 
 await init();
 const docx = await fetch("/report.docx").then((r) => r.arrayBuffer());
 const model = await openToModel(new Uint8Array(docx), "docx");
 // model.nodes["0:1"].nodeType === "paragraph"
+
+// edit anything in `model`…
+const odt = await convertModel(model, { to: "odt" });
 ```
 
 The full JS surface is in [`docs/api.md`](docs/api.md).

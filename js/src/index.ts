@@ -120,6 +120,32 @@ export async function openToModelString(
   return wasm.open_to_json_string(bytes, from ?? "");
 }
 
+/**
+ * Write a structured model back out to bytes in the requested format.
+ *
+ * Symmetric to `openToModel`. The model object is JSON-serialised once and
+ * sent to WASM as a string for a single boundary crossing.
+ */
+export async function convertModel(
+  model: S1DocumentModel,
+  opts: { to: Format },
+): Promise<Uint8Array> {
+  return convertModelString(JSON.stringify(model), opts);
+}
+
+/**
+ * Like `convertModel` but accepts the model as a raw JSON string. Use this
+ * when the caller already has the model serialised (e.g., received from a
+ * Worker).
+ */
+export async function convertModelString(
+  json: string,
+  opts: { to: Format },
+): Promise<Uint8Array> {
+  const wasm = (await loadWasm()) as WasmModule;
+  return wasm.convert_from_model_string(json, opts.to);
+}
+
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
@@ -140,4 +166,6 @@ interface WasmModule {
   extract_text(bytes: Uint8Array, from: string): string;
   open_to_json_string(bytes: Uint8Array, from: string): string;
   open_to_json(bytes: Uint8Array, from: string): unknown;
+  convert_from_model_string(json: string, to: string): Uint8Array;
+  convert_from_model(model: unknown, to: string): Uint8Array;
 }

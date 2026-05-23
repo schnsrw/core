@@ -63,6 +63,33 @@ pub fn open_to_json_string(data: &[u8], from: &str) -> Result<String, JsError> {
     serde_json::to_string(&json).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Reverse of `open_to_json_string`: take a JSON model string and write it to
+/// the requested output format.
+///
+/// `to` is one of the writable formats (`"docx"`, `"odt"`, `"pdf"`, `"md"`,
+/// `"txt"`). Phase C of the WASM ⇄ JS pipeline — bytes-in / model-out becomes
+/// model-in / bytes-out.
+#[wasm_bindgen]
+pub fn convert_from_model_string(json: &str, to: &str) -> Result<Vec<u8>, JsError> {
+    let value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| JsError::new(&format!("invalid JSON model: {e}")))?;
+    let model = json_to_model(&value)
+        .map_err(|e| JsError::new(&format!("model deserialization failed: {e}")))?;
+    let doc = s1engine::Document::from_model(model);
+    let target = parse_format(to)?;
+    doc.export(target).map_err(jserr)
+}
+
+/// JSON-object variant of `convert_from_model_string` — the caller passes a
+/// JS object (matching `S1DocumentModel`) instead of a JSON string.
+#[wasm_bindgen]
+pub fn convert_from_model(model: JsValue, to: &str) -> Result<Vec<u8>, JsError> {
+    let s = js_sys::JSON::stringify(&model)
+        .map_err(|e| JsError::new(&format!("JSON.stringify failed: {:?}", e)))?;
+    let s: String = s.into();
+    convert_from_model_string(&s, to)
+}
+
 /// Parse a document and return its model as a `JsValue` (parsed JSON object).
 ///
 /// Equivalent to `JSON.parse(open_to_json_string(…))` but done on the Rust
@@ -350,4 +377,431 @@ fn model_to_json(model: &DocumentModel) -> serde_json::Value {
         "styles": styles_json,
         "sections": sections_json,
     })
+}
+
+// ── JSON → Model deserialization (Phase C) ──────────────────────────────────
+
+fn parse_node_id(s: &str) -> Result<NodeId, String> {
+    let (rep, ctr) = s
+        .split_once(':')
+        .ok_or_else(|| format!("invalid node id {s:?} (expected 'replica:counter')"))?;
+    let replica: u64 = rep.parse().map_err(|e| format!("bad replica in {s:?}: {e}"))?;
+    let counter: u64 = ctr.parse().map_err(|e| format!("bad counter in {s:?}: {e}"))?;
+    Ok(NodeId { replica, counter })
+}
+
+fn parse_node_type(s: &str) -> Option<NodeType> {
+    Some(match s {
+        "document" => NodeType::Document,
+        "body" => NodeType::Body,
+        "section" => NodeType::Section,
+        "paragraph" => NodeType::Paragraph,
+        "table" => NodeType::Table,
+        "tableRow" => NodeType::TableRow,
+        "tableCell" => NodeType::TableCell,
+        "run" => NodeType::Run,
+        "text" => NodeType::Text,
+        "lineBreak" => NodeType::LineBreak,
+        "pageBreak" => NodeType::PageBreak,
+        "columnBreak" => NodeType::ColumnBreak,
+        "tab" => NodeType::Tab,
+        "tableOfContents" => NodeType::TableOfContents,
+        "equation" => NodeType::Equation,
+        "image" => NodeType::Image,
+        "drawing" => NodeType::Drawing,
+        "header" => NodeType::Header,
+        "footer" => NodeType::Footer,
+        "field" => NodeType::Field,
+        "bookmarkStart" => NodeType::BookmarkStart,
+        "bookmarkEnd" => NodeType::BookmarkEnd,
+        "commentStart" => NodeType::CommentStart,
+        "commentEnd" => NodeType::CommentEnd,
+        "commentBody" => NodeType::CommentBody,
+        "footnoteRef" => NodeType::FootnoteRef,
+        "footnoteBody" => NodeType::FootnoteBody,
+        "endnoteRef" => NodeType::EndnoteRef,
+        "endnoteBody" => NodeType::EndnoteBody,
+        _ => return None,
+    })
+}
+
+fn parse_attr_key(s: &str) -> Option<AttributeKey> {
+    Some(match s {
+        "fontFamily" => AttributeKey::FontFamily,
+        "fontSize" => AttributeKey::FontSize,
+        "bold" => AttributeKey::Bold,
+        "italic" => AttributeKey::Italic,
+        "underline" => AttributeKey::Underline,
+        "strikethrough" => AttributeKey::Strikethrough,
+        "color" => AttributeKey::Color,
+        "highlightColor" => AttributeKey::HighlightColor,
+        "superscript" => AttributeKey::Superscript,
+        "subscript" => AttributeKey::Subscript,
+        "fontSpacing" => AttributeKey::FontSpacing,
+        "language" => AttributeKey::Language,
+        "alignment" => AttributeKey::Alignment,
+        "indentLeft" => AttributeKey::IndentLeft,
+        "indentRight" => AttributeKey::IndentRight,
+        "indentFirstLine" => AttributeKey::IndentFirstLine,
+        "spacingBefore" => AttributeKey::SpacingBefore,
+        "spacingAfter" => AttributeKey::SpacingAfter,
+        "lineSpacing" => AttributeKey::LineSpacing,
+        "keepWithNext" => AttributeKey::KeepWithNext,
+        "keepLinesTogether" => AttributeKey::KeepLinesTogether,
+        "pageBreakBefore" => AttributeKey::PageBreakBefore,
+        "background" => AttributeKey::Background,
+        "styleId" => AttributeKey::StyleId,
+        "cellWidth" => AttributeKey::CellWidth,
+        "verticalAlign" => AttributeKey::VerticalAlign,
+        "cellBackground" => AttributeKey::CellBackground,
+        "colSpan" => AttributeKey::ColSpan,
+        "rowSpan" => AttributeKey::RowSpan,
+        "imageMediaId" => AttributeKey::ImageMediaId,
+        "imageWidth" => AttributeKey::ImageWidth,
+        "imageHeight" => AttributeKey::ImageHeight,
+        "imageAltText" => AttributeKey::ImageAltText,
+        "fieldType" => AttributeKey::FieldType,
+        "fieldCode" => AttributeKey::FieldCode,
+        "hyperlinkUrl" => AttributeKey::HyperlinkUrl,
+        "bookmarkName" => AttributeKey::BookmarkName,
+        "tableColumnWidths" => AttributeKey::TableColumnWidths,
+        _ => return None,
+    })
+}
+
+fn parse_color(s: &str) -> Option<s1_model::Color> {
+    let s = s.trim_start_matches('#');
+    if s.len() == 6 {
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        Some(s1_model::Color { r, g, b, a: 255 })
+    } else {
+        None
+    }
+}
+
+fn json_to_attr_value(key: &AttributeKey, val: &serde_json::Value) -> Option<AttributeValue> {
+    use AttributeKey as K;
+    use AttributeValue as V;
+    match key {
+        K::Bold
+        | K::Italic
+        | K::Strikethrough
+        | K::Superscript
+        | K::Subscript
+        | K::KeepWithNext
+        | K::KeepLinesTogether
+        | K::PageBreakBefore => val.as_bool().map(V::Bool),
+        K::FontSize
+        | K::FontSpacing
+        | K::IndentLeft
+        | K::IndentRight
+        | K::IndentFirstLine
+        | K::SpacingBefore
+        | K::SpacingAfter
+        | K::ImageWidth
+        | K::ImageHeight => val.as_f64().map(V::Float),
+        K::FontFamily
+        | K::Language
+        | K::StyleId
+        | K::FieldCode
+        | K::HyperlinkUrl
+        | K::BookmarkName
+        | K::ImageAltText
+        | K::TableColumnWidths => val.as_str().map(|s| V::String(s.to_string())),
+        K::Color | K::Background | K::HighlightColor | K::CellBackground => {
+            val.as_str().and_then(parse_color).map(V::Color)
+        }
+        K::Underline => val.as_str().map(|s| {
+            use s1_model::UnderlineStyle::*;
+            V::UnderlineStyle(match s {
+                "single" => Single,
+                "double" => Double,
+                "thick" => Thick,
+                "dotted" => Dotted,
+                "dashed" => Dashed,
+                "wave" => Wave,
+                _ => None,
+            })
+        }),
+        K::Alignment => val.as_str().map(|s| {
+            use s1_model::Alignment::*;
+            V::Alignment(match s {
+                "left" => Left,
+                "center" => Center,
+                "right" => Right,
+                "justify" => Justify,
+                _ => Left,
+            })
+        }),
+        K::VerticalAlign => val.as_str().map(|s| {
+            V::VerticalAlignment(match s {
+                "top" => VerticalAlignment::Top,
+                "center" => VerticalAlignment::Center,
+                "bottom" => VerticalAlignment::Bottom,
+                _ => VerticalAlignment::Top,
+            })
+        }),
+        K::CellWidth => val.get("type").and_then(|t| t.as_str()).map(|t| {
+            let v = val.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            V::TableWidth(match t {
+                "fixed" => TableWidth::Fixed(v),
+                "percent" => TableWidth::Percent(v),
+                _ => TableWidth::Auto,
+            })
+        }),
+        K::ColSpan | K::RowSpan => val.as_i64().map(V::Int),
+        K::ImageMediaId => val.as_u64().map(|n| V::MediaId(s1_model::MediaId(n))),
+        K::FieldType => val.as_str().map(|s| {
+            V::FieldType(match s {
+                "pageNumber" => FieldType::PageNumber,
+                "pageCount" => FieldType::PageCount,
+                "date" => FieldType::Date,
+                "time" => FieldType::Time,
+                "fileName" => FieldType::FileName,
+                "author" => FieldType::Author,
+                "tableOfContents" => FieldType::TableOfContents,
+                _ => FieldType::Custom,
+            })
+        }),
+        K::LineSpacing => val.get("type").and_then(|t| t.as_str()).map(|t| {
+            let v = val.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            V::LineSpacing(match t {
+                "single" => LineSpacing::Single,
+                "onePointFive" => LineSpacing::OnePointFive,
+                "double" => LineSpacing::Double,
+                "exact" => LineSpacing::Exact(v),
+                "atLeast" => LineSpacing::AtLeast(v),
+                "multiple" => LineSpacing::Multiple(v),
+                _ => LineSpacing::Single,
+            })
+        }),
+        _ => None,
+    }
+}
+
+fn json_to_attrs(val: &serde_json::Value) -> s1_model::AttributeMap {
+    let mut attrs = s1_model::AttributeMap::new();
+    if let Some(obj) = val.as_object() {
+        for (k, v) in obj {
+            if let Some(key) = parse_attr_key(k) {
+                if let Some(av) = json_to_attr_value(&key, v) {
+                    attrs.set(key, av);
+                }
+            }
+        }
+    }
+    attrs
+}
+
+fn json_to_model(value: &serde_json::Value) -> Result<DocumentModel, String> {
+    let nodes_obj = value
+        .get("nodes")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| "missing 'nodes' object".to_string())?;
+    let root_str = value
+        .get("root")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'root' string".to_string())?;
+    let root_id_expected = parse_node_id(root_str)?;
+
+    let mut model = DocumentModel::new();
+
+    // The model's own root id (NodeId(0,0)) should match the JSON's root.
+    if model.root_id() != root_id_expected {
+        return Err(format!(
+            "JSON root id {root_id_expected:?} does not match model root {:?}",
+            model.root_id()
+        ));
+    }
+
+    // BFS from root: read children list of each JSON node, insert each child,
+    // remembering JSON node id → new model id mapping so subsequent inserts
+    // attach under the right parent.
+    use std::collections::HashMap;
+    let mut json_to_new: HashMap<String, NodeId> = HashMap::new();
+    json_to_new.insert(root_str.to_string(), model.root_id());
+
+    // Apply attributes onto root from JSON
+    if let Some(root_node) = nodes_obj.get(root_str) {
+        if let Some(attrs_val) = root_node.get("attributes") {
+            let attrs = json_to_attrs(attrs_val);
+            if let Some(rn) = model.node_mut(model.root_id()) {
+                rn.attributes = attrs;
+            }
+        }
+    }
+
+    let mut queue: Vec<String> = vec![root_str.to_string()];
+    while let Some(parent_key) = queue.pop() {
+        let parent_node = match nodes_obj.get(&parent_key) {
+            Some(v) => v,
+            None => continue,
+        };
+        let parent_id = match json_to_new.get(&parent_key).copied() {
+            Some(id) => id,
+            None => continue,
+        };
+        let children = parent_node
+            .get("children")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        for (idx, child_val) in children.iter().enumerate() {
+            let child_key = match child_val.as_str() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let child_obj = match nodes_obj.get(&child_key) {
+                Some(c) => c,
+                None => continue,
+            };
+            let type_str = child_obj
+                .get("nodeType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let node_type = match parse_node_type(type_str) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let new_id = model.next_id();
+            let mut node = if node_type == NodeType::Text {
+                let text = child_obj
+                    .get("textContent")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                s1_model::Node::text(new_id, text)
+            } else {
+                let mut n = s1_model::Node::new(new_id, node_type);
+                if let Some(t) = child_obj.get("textContent").and_then(|v| v.as_str()) {
+                    n.text_content = Some(t.to_string());
+                }
+                n
+            };
+
+            if let Some(av) = child_obj.get("attributes") {
+                node.attributes = json_to_attrs(av);
+            }
+
+            model
+                .insert_node(parent_id, idx, node)
+                .map_err(|e| format!("insert {type_str} under {parent_id:?}: {e:?}"))?;
+
+            json_to_new.insert(child_key.clone(), new_id);
+            queue.push(child_key);
+        }
+    }
+
+    // Metadata
+    if let Some(meta_val) = value.get("metadata").and_then(|v| v.as_object()) {
+        let meta = model.metadata_mut();
+        if let Some(s) = meta_val.get("title").and_then(|v| v.as_str()) {
+            meta.title = Some(s.to_string());
+        }
+        if let Some(s) = meta_val.get("subject").and_then(|v| v.as_str()) {
+            meta.subject = Some(s.to_string());
+        }
+        if let Some(s) = meta_val.get("creator").and_then(|v| v.as_str()) {
+            meta.creator = Some(s.to_string());
+        }
+        if let Some(s) = meta_val.get("description").and_then(|v| v.as_str()) {
+            meta.description = Some(s.to_string());
+        }
+        if let Some(s) = meta_val.get("language").and_then(|v| v.as_str()) {
+            meta.language = Some(s.to_string());
+        }
+    }
+
+    Ok(model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Phase C smoke test: serialize a real document to JSON, deserialize it
+    /// back, and confirm the output is structurally similar.
+    #[test]
+    fn json_model_round_trip_preserves_paragraphs() {
+        let mut model = DocumentModel::new();
+        let body_id = model.next_id();
+        model
+            .insert_node(model.root_id(), 0, s1_model::Node::new(body_id, NodeType::Body))
+            .unwrap();
+        let para_id = model.next_id();
+        model
+            .insert_node(body_id, 0, s1_model::Node::new(para_id, NodeType::Paragraph))
+            .unwrap();
+        let run_id = model.next_id();
+        let mut run = s1_model::Node::new(run_id, NodeType::Run);
+        run.attributes.set(AttributeKey::Bold, AttributeValue::Bool(true));
+        run.attributes
+            .set(AttributeKey::FontFamily, AttributeValue::String("Arial".into()));
+        model.insert_node(para_id, 0, run).unwrap();
+        let text_id = model.next_id();
+        model
+            .insert_node(run_id, 0, s1_model::Node::text(text_id, "hello"))
+            .unwrap();
+
+        let json = model_to_json(&model);
+        let json_str = serde_json::to_string(&json).unwrap();
+
+        let rebuilt = json_to_model(&serde_json::from_str(&json_str).unwrap()).unwrap();
+
+        // Walk and verify
+        let body2 = rebuilt
+            .descendants(rebuilt.root_id())
+            .into_iter()
+            .find(|n| n.node_type == NodeType::Body)
+            .expect("body present");
+        assert_eq!(body2.children.len(), 1);
+        let para2 = rebuilt.node(body2.children[0]).unwrap();
+        assert_eq!(para2.node_type, NodeType::Paragraph);
+        assert_eq!(para2.children.len(), 1);
+        let run2 = rebuilt.node(para2.children[0]).unwrap();
+        assert_eq!(run2.node_type, NodeType::Run);
+        assert_eq!(run2.attributes.get_bool(&AttributeKey::Bold), Some(true));
+        assert_eq!(
+            run2.attributes.get_string(&AttributeKey::FontFamily),
+            Some("Arial")
+        );
+        let text2 = rebuilt.node(run2.children[0]).unwrap();
+        assert_eq!(text2.node_type, NodeType::Text);
+        assert_eq!(text2.text_content.as_deref(), Some("hello"));
+    }
+
+    /// Round-trip through DOCX: bytes → model → JSON → model → bytes,
+    /// verify text content survives.
+    #[test]
+    fn convert_from_model_string_writes_docx() {
+        use s1engine::{Engine, Format};
+
+        // Build a model with text "ROUNDTRIP" and write to DOCX bytes via the
+        // engine to make sure the export path accepts a from-model document.
+        let json = r#"{
+            "root": "0:0",
+            "nodes": {
+                "0:0": {"id":"0:0","nodeType":"document","children":["0:1"],"parent":null,"textContent":null,"attributes":{}},
+                "0:1": {"id":"0:1","nodeType":"body","children":["0:2"],"parent":"0:0","textContent":null,"attributes":{}},
+                "0:2": {"id":"0:2","nodeType":"paragraph","children":["0:3"],"parent":"0:1","textContent":null,"attributes":{}},
+                "0:3": {"id":"0:3","nodeType":"run","children":["0:4"],"parent":"0:2","textContent":null,"attributes":{}},
+                "0:4": {"id":"0:4","nodeType":"text","children":[],"parent":"0:3","textContent":"ROUNDTRIP","attributes":{}}
+            },
+            "metadata": {"title": "Test"},
+            "styles": [],
+            "sections": []
+        }"#;
+        let model = json_to_model(&serde_json::from_str(json).unwrap()).unwrap();
+        let doc = s1engine::Document::from_model(model);
+        let docx_bytes = doc.export(Format::Docx).unwrap();
+        assert!(docx_bytes.len() > 100, "DOCX output too small");
+
+        // Re-parse and confirm text survives.
+        let engine = Engine::new();
+        let reread = engine.open(&docx_bytes).unwrap();
+        assert!(reread.to_plain_text().contains("ROUNDTRIP"));
+    }
 }
