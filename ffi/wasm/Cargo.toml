@@ -30,8 +30,14 @@ wasm-bindgen-test = "0.3"
 
 # wasm-pack's bundled wasm-opt is older than the Rust toolchain output, which
 # emits bulk-memory ops by default. Re-enable bulk-memory so optimisation runs.
+# `-Oz` favours code size over speed — appropriate for distribution; consumers
+# can pick the speed/size trade-off if they bundle their own WASM.
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-O3", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+
+# Same args for the size-focused custom profile.
+[package.metadata.wasm-pack.profile.release-wasm]
+wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
 
 
 [lints]

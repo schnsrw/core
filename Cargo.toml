@@ -63,9 +63,16 @@ lto = true
 codegen-units = 1
 strip = true
 
+# Size-focused profile used by the WASM build pipeline.
+# `opt-level = "z"` trades a small amount of speed for substantially smaller
+# code; `panic = "abort"` removes the unwinding tables (we don't catch_unwind
+# in this crate); `lto`/`codegen-units` are inherited from release.
 [profile.release-wasm]
 inherits = "release"
 opt-level = "z"
+panic = "abort"
+debug = false
+overflow-checks = false
 
 # Clippy is gated as `-D warnings` in CI. These two style lints are inherited
 # from the original codebase and are tracked as cleanup work — silence them
