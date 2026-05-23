@@ -390,7 +390,22 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
         v
     };
 
-    for item in &items {
+    // Scan forward over `items` from `start` and return the end index of a
+    // run of consecutive Run items that all share the same href.
+    let scan_link_group_end = |items: &[Inline<'_>], start: usize, href: &str| -> usize {
+        let mut end = start;
+        while end < items.len() {
+            match &items[end] {
+                Inline::Run { url: Some(u), .. } if *u == href => end += 1,
+                _ => break,
+            }
+        }
+        end.max(start + 1)
+    };
+
+    let mut i = 0usize;
+    while i < items.len() {
+        let item = &items[i];
         match item {
             Inline::LineBreak => {
                 close_all(&mut stack, out);
@@ -417,9 +432,11 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
                 if url.is_some() || *code {
                     close_all(&mut stack, out);
                     if let Some(href) = url {
-                        // Autolink: text equals URL (mailto: stripped) and no
-                        // title — emit `<url>` instead of `[url](url)`.
-                        let is_autolink = title.is_none()
+                        let group_end = scan_link_group_end(&items, i, href);
+                        let single = group_end == i + 1;
+
+                        let is_autolink = single
+                            && title.is_none()
                             && !*code
                             && !*bold
                             && !*italic
@@ -430,20 +447,54 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
                             out.push('<');
                             out.push_str(text);
                             out.push('>');
-                        } else if *code {
-                            out.push('[');
-                            write_inline_code(out, text);
-                            out.push_str("](");
-                            out.push_str(href);
-                            if let Some(t) = title {
-                                out.push_str(" \"");
-                                out.push_str(t);
-                                out.push('"');
-                            }
-                            out.push(')');
                         } else {
                             out.push('[');
-                            push_formatted(out, text, *bold, *italic, *strike);
+                            if single {
+                                if *code {
+                                    write_inline_code(out, text);
+                                } else {
+                                    push_formatted(out, text, *bold, *italic, *strike);
+                                }
+                            } else {
+                                // Multi-run link: render runs inside one `[]`,
+                                // using a local marker stack so internal
+                                // bold/italic/strike are emitted just once.
+                                let mut sub_stack: Vec<Mark> = Vec::new();
+                                for sub in &items[i..group_end] {
+                                    if let Inline::Run {
+                                        text: t,
+                                        bold: b,
+                                        italic: it,
+                                        strike: s,
+                                        code: c,
+                                        ..
+                                    } = sub
+                                    {
+                                        let tgt = target_set(*b, *it, *s);
+                                        let to_close: Vec<Mark> = sub_stack
+                                            .iter()
+                                            .filter(|m| !tgt.contains(m))
+                                            .copied()
+                                            .collect();
+                                        for m in to_close.into_iter().rev() {
+                                            close_through(&mut sub_stack, m, out);
+                                        }
+                                        for m in &tgt {
+                                            if !sub_stack.contains(m) {
+                                                open_marker(*m, out);
+                                                sub_stack.push(*m);
+                                            }
+                                        }
+                                        if *c {
+                                            close_all(&mut sub_stack, out);
+                                            write_inline_code(out, t);
+                                        } else {
+                                            out.push_str(t);
+                                        }
+                                    }
+                                }
+                                close_all(&mut sub_stack, out);
+                            }
                             out.push_str("](");
                             out.push_str(href);
                             if let Some(t) = title {
@@ -452,10 +503,15 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
                                 out.push('"');
                             }
                             out.push(')');
+                            if !single {
+                                i = group_end;
+                                continue;
+                            }
                         }
                     } else {
                         write_inline_code(out, text);
                     }
+                    i += 1;
                     continue;
                 }
 
@@ -482,6 +538,7 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
                 out.push_str(text);
             }
         }
+        i += 1;
     }
 
     close_all(&mut stack, out);
