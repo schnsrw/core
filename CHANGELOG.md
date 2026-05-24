@@ -108,6 +108,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   round-trip.** Per-language `CodeBlock<Lang>` styles are registered on
   the fly (inheriting from the base `CodeBlock`); the writer emits
   ` ```rust ` → DOCX → ` ```rust ` instead of dropping to ` ``` `.
+- **MD → DOCX: Markdown images survive into DOCX.** `![alt](url)`
+  with no fetched bytes used to vanish entirely on export. The DOCX
+  writer now emits a placeholder hyperlink (alt text linking to the
+  URL) so both pieces ride through; round-trip MD comes back as
+  `[alt](url)` — content preserved, just lossy on the leading `!`.
+- **MD reader: image alt text captured correctly.** Previously
+  populated from the `title` attribute (which is the optional
+  `"Title"` after the URL, not the alt); the inner text leaked into
+  the surrounding paragraph as a separate run. The reader now defers
+  Image node creation until `TagEnd::Image` and accumulates the inner
+  text events as the real alt.
+- **MD → DOCX: keep-with-next + keep-lines on headings; keep-lines on
+  code blocks.** Headings won't orphan at page bottom anymore; multi-
+  line code blocks don't split awkwardly across pages.
+
+### Fixed
+
+- **DOCX reader: XML entities decoded on attribute reads.** `get_attr`
+  used to return raw bytes; URLs containing `&` (e.g. query strings)
+  came back with `&amp;` literally embedded in the model. Now decodes
+  via `quick_xml::Attribute::unescape_value`. Affects every attribute
+  read in the DOCX reader (rels Target, w:val, etc.).
 
 - **`Format::MdRaw` — Markdown passthrough mode.** Stores the input
   bytes as a single text node so `MdRaw → DocumentModel → MdRaw` is

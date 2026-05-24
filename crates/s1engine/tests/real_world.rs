@@ -1732,6 +1732,24 @@ fn docx_to_md_diagnostic_dump() {
         "issue-387-font-theme-override.docx",
     ];
 
+    // Round-trip every MD fixture and dump the result so we can see
+    // which words are being lost (helps target the next pass).
+    for name in ["links_images.md", "emphasis_edge.md", "headings_all.md"] {
+        if let Ok(md_bytes) = std::fs::read(workspace_path(&format!("testdocs/md/samples/{name}")))
+        {
+            if let Ok(doc) = engine.open_as(&md_bytes, Format::Md) {
+                if let Ok(docx) = doc.export(Format::Docx) {
+                    if let Ok(doc2) = engine.open(&docx) {
+                        if let Ok(round) = doc2.export_string(Format::Md) {
+                            eprintln!("\n========== {name} → DOCX → MD ==========");
+                            eprintln!("{round}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Also MD → DOCX → MD round-trip for the lists fixture, where any
     // ordered-list regression will be obvious in the rendered output.
     if let Ok(md_bytes) = std::fs::read(workspace_path("testdocs/md/samples/nested_lists.md")) {
