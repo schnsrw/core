@@ -5,11 +5,18 @@ use quick_xml::events::BytesStart;
 /// Get an attribute value by local name (ignoring namespace prefix).
 ///
 /// For `<w:jc w:val="center"/>`, `get_attr(e, b"val")` returns `Some("center")`.
+///
+/// XML entities (`&amp;`, `&lt;`, `&quot;`, `&apos;`, `&gt;`, numeric refs)
+/// are decoded so callers receive the literal text. Without this, a URL
+/// stored as `https://example.com/?a=1&amp;b=2` in document.xml would
+/// surface to consumers as `…&amp;b=2` and corrupt the round-trip back
+/// to Markdown.
 pub fn get_attr(e: &BytesStart<'_>, local_name: &[u8]) -> Option<String> {
-    e.attributes()
+    let attr = e
+        .attributes()
         .flatten()
-        .find(|attr| attr.key.local_name().as_ref() == local_name)
-        .and_then(|attr| std::str::from_utf8(&attr.value).ok().map(|s| s.to_string()))
+        .find(|attr| attr.key.local_name().as_ref() == local_name)?;
+    attr.unescape_value().ok().map(|s| s.into_owned())
 }
 
 /// Get the `w:val` attribute (the most common OOXML attribute).
