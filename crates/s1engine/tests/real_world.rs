@@ -1332,6 +1332,38 @@ fn md_table_export_has_visible_borders() {
     );
 }
 
+/// Regression: Format::MdRaw is a byte-identical passthrough — the
+/// CommonMark parser is bypassed so consumers can plug in their own
+/// Markdown renderer.
+#[test]
+fn md_raw_passthrough_is_byte_identical() {
+    use s1engine::{Engine, Format};
+
+    // A setext heading — the CommonMark parser would normalise this to
+    // `# Heading`, so it makes a good differentiator from the raw path.
+    let src = "Heading\n=======\n\nBody  with  unusual  spacing.\n";
+
+    let engine = Engine::new();
+    let doc = engine
+        .open_as(src.as_bytes(), Format::MdRaw)
+        .expect("open as md-raw");
+    let out = doc
+        .export_string(Format::MdRaw)
+        .expect("export md-raw string");
+    assert_eq!(src, out, "MdRaw round-trip must be byte-identical");
+
+    // Sanity: the regular CommonMark path *does* normalise the same
+    // input (e.g. setext → ATX), so MdRaw earns its keep here.
+    let parsed = engine
+        .open_as(src.as_bytes(), Format::Md)
+        .expect("open as md");
+    let normalised = parsed.export_string(Format::Md).expect("export md string");
+    assert_ne!(
+        src, normalised,
+        "regular Md path is expected to normalise setext heading"
+    );
+}
+
 /// Regression: MD tables converted to DOCX must emit a `<w:tblGrid>`
 /// whose `<w:gridCol>` widths are proportional to per-column content
 /// length, so Word's autofit starts from a sensible layout instead of

@@ -21,6 +21,10 @@ pub enum Format {
     Doc,
     /// Markdown (`.md`, `.markdown`)
     Md,
+    /// Markdown without CommonMark parsing — preserves the raw source
+    /// byte-for-byte through the document model. Consumers can plug in
+    /// their own renderer or pass the bytes onward unchanged.
+    MdRaw,
     /// Comma-separated values (`.csv`) — import/export via s1-convert
     Csv,
     /// Microsoft Excel XLSX — recognized but not yet editable
@@ -46,6 +50,7 @@ impl Format {
             "txt" | "text" => Ok(Self::Txt),
             "doc" => Ok(Self::Doc),
             "md" | "markdown" => Ok(Self::Md),
+            "md-raw" | "mdraw" | "raw-md" => Ok(Self::MdRaw),
             "csv" => Ok(Self::Csv),
             "xlsx" => Ok(Self::Xlsx),
             "pptx" => Ok(Self::Pptx),
@@ -93,6 +98,7 @@ impl Format {
             Self::Txt => "txt",
             Self::Doc => "doc",
             Self::Md => "md",
+            Self::MdRaw => "md",
             Self::Csv => "csv",
             Self::Xlsx => "xlsx",
             Self::Pptx => "pptx",
@@ -110,6 +116,7 @@ impl Format {
             Self::Txt => "text/plain",
             Self::Doc => "application/msword",
             Self::Md => "text/markdown",
+            Self::MdRaw => "text/markdown",
             Self::Csv => "text/csv",
             Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             Self::Pptx => {
@@ -124,7 +131,7 @@ impl Format {
     pub fn is_document(&self) -> bool {
         matches!(
             self,
-            Self::Docx | Self::Odt | Self::Doc | Self::Txt | Self::Md
+            Self::Docx | Self::Odt | Self::Doc | Self::Txt | Self::Md | Self::MdRaw
         )
     }
 
@@ -142,7 +149,7 @@ impl Format {
     pub fn is_editable(&self) -> bool {
         matches!(
             self,
-            Self::Docx | Self::Odt | Self::Doc | Self::Txt | Self::Md | Self::Csv
+            Self::Docx | Self::Odt | Self::Doc | Self::Txt | Self::Md | Self::MdRaw | Self::Csv
         )
     }
 }

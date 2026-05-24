@@ -87,7 +87,8 @@ opinionated defaults the converter applies):
 
 If you need a *strict* "treat MD as text" conversion — bypassing the
 CommonMark parser entirely so consumers can ship their own renderer —
-see `Format::MdRaw` (planned).
+use `Format::MdRaw`. It stores the input as a single text node so
+`MdRaw → DocumentModel → MdRaw` is a byte-identical round-trip.
 
 ### ODT
 

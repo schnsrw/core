@@ -51,6 +51,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixtures and an MD → DOCX → MD round-trip — useful when the audit
   reports 96 % and you still need to see what's wrong.
 
+### Added
+
+- **`Format::MdRaw` — Markdown passthrough mode.** Stores the input
+  bytes as a single text node so `MdRaw → DocumentModel → MdRaw` is
+  a byte-identical round-trip. CommonMark parsing is skipped; setext
+  headings, unusual whitespace, custom syntax all survive untouched.
+  Lets consumers ship their own Markdown renderer without having
+  Casual Core normalise the source. Surfaces as `"md-raw"` in the
+  JS `Format` union. (`crates/s1engine/src/format.rs`,
+  `crates/s1-format-md/src/lib.rs`, `js/src/types.ts`)
+
 ### Documentation
 
 - **`docs/fidelity.md`** gained a Markdown section that spells out

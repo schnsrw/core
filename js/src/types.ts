@@ -1,7 +1,11 @@
 // Public types for @schnsrw/core.
 
-/** Document formats Casual Core can read or write. */
-export type Format = "docx" | "odt" | "pdf" | "md" | "txt";
+/** Document formats Casual Core can read or write.
+ *
+ * `md-raw` is a passthrough — input bytes land in the model unchanged so a
+ * consumer can plug in its own Markdown renderer. CommonMark parsing is
+ * applied only for `md`. */
+export type Format = "docx" | "odt" | "pdf" | "md" | "md-raw" | "txt";
 
 /** Result of detecting the format of an input byte buffer. */
 export interface DetectedFormat {

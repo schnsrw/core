@@ -864,6 +864,8 @@ impl Document {
             Format::Txt => Ok(s1_format_txt::write(&self.model)),
             #[cfg(feature = "md")]
             Format::Md => Ok(s1_format_md::write_bytes(&self.model)),
+            #[cfg(feature = "md")]
+            Format::MdRaw => Ok(s1_format_md::write_raw_bytes(&self.model)),
             #[cfg(feature = "pdf")]
             Format::Pdf => {
                 // Convenience path: use a font DB that actually has fonts.
@@ -1331,6 +1333,8 @@ impl Document {
             Format::Txt => Ok(s1_format_txt::write_string(&self.model)),
             #[cfg(feature = "md")]
             Format::Md => Ok(s1_format_md::write_string(&self.model)),
+            #[cfg(feature = "md")]
+            Format::MdRaw => Ok(s1_format_md::write_raw_string(&self.model)),
             _ => {
                 let bytes = self.export(format)?;
                 String::from_utf8(bytes)
