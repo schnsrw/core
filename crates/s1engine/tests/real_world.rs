@@ -1628,6 +1628,86 @@ fn f() {}
     }
 }
 
+/// Diagnostic: print every word lost on round-trip for each MD fixture,
+/// so the next quality pass can target real syntax patterns rather than
+/// guess. Ignored by default; run manually.
+#[test]
+#[ignore = "diagnostic — run manually to see what words drop"]
+fn md_lost_words_diagnostic() {
+    use s1engine::{Engine, Format};
+    use std::collections::HashMap;
+
+    fn norm(w: &str) -> &str {
+        w.trim_matches(|c: char| {
+            c == '*' || c == '_' || c == '~' || c == '`' || c == '<' || c == '>'
+        })
+    }
+
+    let dir = workspace_path("testdocs/md/samples");
+    let mut entries: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |e| e == "md"))
+            .collect(),
+        Err(_) => return,
+    };
+    entries.sort();
+
+    let engine = Engine::new();
+    for path in &entries {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let original = match std::str::from_utf8(&bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => continue,
+        };
+        let doc = match engine.open_as(&bytes, Format::Md) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let docx = match doc.export(Format::Docx) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let doc2 = match engine.open(&docx) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let round = match doc2.export_string(Format::Md) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let orig_words: Vec<&str> = original.split_whitespace().map(norm).collect();
+        let round_words: Vec<&str> = round.split_whitespace().map(norm).collect();
+        let mut round_counts: HashMap<&str, usize> = HashMap::new();
+        for w in &round_words {
+            *round_counts.entry(*w).or_insert(0) += 1;
+        }
+        let mut lost: Vec<&str> = Vec::new();
+        for w in &orig_words {
+            if let Some(c) = round_counts.get_mut(w) {
+                if *c > 0 {
+                    *c -= 1;
+                    continue;
+                }
+            }
+            lost.push(*w);
+        }
+        let fname = path.file_name().unwrap().to_str().unwrap_or("");
+        eprintln!("\n=== {fname}: {} lost words ===", lost.len());
+        for (i, w) in lost.iter().take(30).enumerate() {
+            eprintln!("  [{i}] {w:?}");
+        }
+        if lost.len() > 30 {
+            eprintln!("  ... and {} more", lost.len() - 30);
+        }
+    }
+}
+
 /// Diagnostic: dump key parts of a DOCX produced from a rich MD source so
 /// we can audit MD→DOCX quality across all constructs (lists, code, quotes,
 /// links, etc.). Ignored by default.

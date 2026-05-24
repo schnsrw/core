@@ -1041,13 +1041,23 @@ fn write_image_placeholder_hyperlink(
         .unwrap_or_default();
     let label = if alt.is_empty() { url.clone() } else { alt };
 
+    // The optional `"Title"` after the URL in `![alt](url "title")` is
+    // carried via HyperlinkTooltip — round-trip it onto the hyperlink
+    // element so MD writers reproduce the title.
+    let tooltip_attr = image
+        .attributes
+        .get_string(&AttributeKey::HyperlinkTooltip)
+        .filter(|t| !t.is_empty())
+        .map(|t| format!(r#" w:tooltip="{}""#, escape_xml(t)))
+        .unwrap_or_default();
+
     let rid = format!("rImgLink{}", hyperlink_rels.len() + 1);
     hyperlink_rels.push(HyperlinkRelEntry {
         rid: rid.clone(),
         target: url,
     });
     xml.push_str(&format!(
-        r#"<w:hyperlink r:id="{rid}"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r></w:hyperlink>"#,
+        r#"<w:hyperlink r:id="{rid}"{tooltip_attr}><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r></w:hyperlink>"#,
         escape_xml(&label)
     ));
 }
