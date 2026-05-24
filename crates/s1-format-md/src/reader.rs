@@ -52,7 +52,96 @@ pub fn read(input: &str) -> Result<DocumentModel, MdError> {
         process_event(&mut doc, &mut ctx, event)?;
     }
 
+    register_per_language_code_styles(&mut doc);
+
     Ok(doc)
+}
+
+/// Walk the document; for every distinct `CodeLanguage` value seen on a
+/// `CodeBlock` paragraph, register a `CodeBlock<Lang>` style that
+/// inherits from `CodeBlock`, and rewrite the paragraph's `StyleId` to
+/// that language-specific ID.
+///
+/// This is what carries the fence language hint through a DOCX
+/// round-trip: the style table preserves the styleId, and the MD writer
+/// strips the `CodeBlock` prefix on the way out. Without this step,
+/// `\`\`\`rust` → DOCX → MD would emit `\`\`\``.
+fn register_per_language_code_styles(doc: &mut DocumentModel) {
+    let body_id = match doc.body_id() {
+        Some(id) => id,
+        None => return,
+    };
+    let body_children: Vec<NodeId> = match doc.node(body_id) {
+        Some(n) => n.children.clone(),
+        None => return,
+    };
+
+    let mut langs_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut updates: Vec<(NodeId, String)> = Vec::new();
+
+    for child_id in body_children {
+        let Some(node) = doc.node(child_id) else {
+            continue;
+        };
+        let is_code_block = node
+            .attributes
+            .get_string(&AttributeKey::StyleId)
+            .map(|s| s == "CodeBlock")
+            .unwrap_or(false);
+        if !is_code_block {
+            continue;
+        }
+        let Some(lang) = node.attributes.get_string(&AttributeKey::CodeLanguage) else {
+            continue;
+        };
+        let lang_id = capitalise_lang_id(lang);
+        if lang_id.is_empty() {
+            continue;
+        }
+        let style_id = format!("CodeBlock{lang_id}");
+        langs_seen.insert(style_id.clone());
+        updates.push((child_id, style_id));
+    }
+
+    for style_id in &langs_seen {
+        let mut s = Style::new(style_id, style_id, StyleType::Paragraph);
+        s.parent_id = Some("CodeBlock".into());
+        s.next_style_id = Some("Normal".into());
+        doc.set_style(s);
+    }
+
+    for (node_id, style_id) in updates {
+        if let Some(node) = doc.node_mut(node_id) {
+            node.attributes
+                .set(AttributeKey::StyleId, AttributeValue::String(style_id));
+        }
+    }
+}
+
+/// Turn an arbitrary fence language string (e.g. "rust", "c++", "html5")
+/// into a DOCX-safe identifier suffix (e.g. "Rust", "Cpp", "Html5").
+/// Word's `w:styleId` allows letters and digits; non-alphanumeric
+/// characters get dropped, and the first letter is uppercased.
+fn capitalise_lang_id(lang: &str) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    for c in lang.chars() {
+        if c == '+' {
+            out.push_str(if first { "P" } else { "p" });
+            first = false;
+            continue;
+        }
+        if !c.is_ascii_alphanumeric() {
+            continue;
+        }
+        if first {
+            out.extend(c.to_uppercase());
+            first = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 struct ReadContext {
@@ -332,6 +421,16 @@ fn process_event(
                         row_id,
                         NodeType::TableRow,
                     )?;
+                    // GFM tables have a header row; mark it so Word
+                    // repeats it on every page (tblHeader) and renders
+                    // it bold like a real table header.
+                    if let Some(row) = doc.node_mut(row_id) {
+                        row.attributes
+                            .set(AttributeKey::TableHeaderRow, AttributeValue::Bool(true));
+                    }
+                    // Bold flag carries through emit_text into the
+                    // run-level Bold attribute on every cell run.
+                    ctx.bold = true;
                     ctx.table_child_index += 1;
                     ctx.table_row_id = Some(row_id);
                     ctx.row_child_index = 0;
@@ -436,7 +535,13 @@ fn process_event(
                 ctx.in_table = false;
                 ctx.table_id = None;
             }
-            TagEnd::TableHead | TagEnd::TableRow => {
+            TagEnd::TableHead => {
+                // Bold flag is set for header cells; clear when leaving
+                // the header row so body cells render normally.
+                ctx.bold = false;
+                ctx.table_row_id = None;
+            }
+            TagEnd::TableRow => {
                 ctx.table_row_id = None;
             }
             TagEnd::TableCell => {
@@ -925,31 +1030,48 @@ mod md_table_border_tests {
 }
 
 /// Register a numbering definition (abstract + instance) for a Markdown list.
+///
+/// Mimics Word's default list cascade so nested lists are visually
+/// distinguishable:
+///   - Bullets cycle `•` → `○` → `▪` per level.
+///   - Ordered lists cycle decimal → lower-alpha → lower-roman per level
+///     (1., a., i., 1., a., i., …).
 fn register_numbering(doc: &mut DocumentModel, num_id: u32, ordered: bool) {
     use s1_model::{AbstractNumbering, NumberingInstance, NumberingLevel};
 
-    let abstract_num_id = num_id; // simplest 1:1 mapping
-    let format = if ordered {
-        ListFormat::Decimal
-    } else {
-        ListFormat::Bullet
-    };
+    // (numFmt, level_text template, bullet_font, level_text_for_bullet)
+    // For ordered lists, level_text uses %{lvl+1} placeholder; bullets
+    // use a literal glyph.
+    let ordered_cycle = [
+        (ListFormat::Decimal, "."),
+        (ListFormat::LowerAlpha, "."),
+        (ListFormat::LowerRoman, "."),
+    ];
+    let bullet_cycle = ["\u{2022}", "\u{25E6}", "\u{25AA}"]; // • ○ ▪
 
+    let abstract_num_id = num_id; // simplest 1:1 mapping
     let mut levels = Vec::new();
     for lvl in 0..9u8 {
+        let cycle_idx = (lvl as usize) % 3;
+        let (num_format, level_text, bullet_font) = if ordered {
+            let (fmt, suffix) = ordered_cycle[cycle_idx];
+            (fmt, format!("%{}{}", lvl + 1, suffix), None)
+        } else {
+            (
+                ListFormat::Bullet,
+                bullet_cycle[cycle_idx].to_string(),
+                Some("Symbol".into()),
+            )
+        };
         levels.push(NumberingLevel {
             level: lvl,
-            num_format: format,
-            level_text: if ordered {
-                format!("%{}.", lvl + 1)
-            } else {
-                "\u{2022}".into()
-            },
+            num_format,
+            level_text,
             start: 1,
             indent_left: Some(36.0 * (lvl as f64 + 1.0)),
             indent_hanging: Some(18.0),
             alignment: None,
-            bullet_font: if ordered { None } else { Some("Symbol".into()) },
+            bullet_font,
         });
     }
 

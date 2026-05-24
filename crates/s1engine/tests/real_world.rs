@@ -1250,9 +1250,19 @@ fn md_through_docx_fidelity_audit() {
         // Word-multiset survival — counts how many words from the original
         // appear in the round-trip output (order-independent). Catches actual
         // content loss without flagging line-wrap or marker normalization.
+        // Strip Markdown emphasis markers (`*`, `_`, `~`, surrounding
+        // backticks) so a word that gets bolded or italicised on the
+        // round trip — e.g. table headers we now render bold — still
+        // matches its plain-text original. This audit measures content
+        // survival, not formatting parity.
         use std::collections::HashMap;
-        let orig_words: Vec<&str> = original.split_whitespace().collect();
-        let round_words: Vec<&str> = round.split_whitespace().collect();
+        fn norm(w: &str) -> &str {
+            w.trim_matches(|c: char| {
+                c == '*' || c == '_' || c == '~' || c == '`' || c == '<' || c == '>'
+            })
+        }
+        let orig_words: Vec<&str> = original.split_whitespace().map(norm).collect();
+        let round_words: Vec<&str> = round.split_whitespace().map(norm).collect();
         let mut round_counts: HashMap<&str, usize> = HashMap::new();
         for w in &round_words {
             *round_counts.entry(*w).or_insert(0) += 1;
@@ -1559,14 +1569,22 @@ fn f() {}
         doc_xml.contains(r#"<w:rStyle w:val="Hyperlink"/>"#),
         "link runs must reference the Hyperlink character style; got:\n{doc_xml}"
     );
-    // Code block → pStyle="CodeBlock" (NOT CodeBlockRust).
+    // Code block → pStyle="CodeBlock" or pStyle="CodeBlock<Lang>" if
+    // the fence carried a language hint. The language-specific style
+    // inherits from the base CodeBlock via basedOn; both are valid.
     assert!(
-        doc_xml.contains(r#"<w:pStyle w:val="CodeBlock"/>"#),
-        "code blocks must reference CodeBlock; got:\n{doc_xml}"
+        doc_xml.contains(r#"<w:pStyle w:val="CodeBlockRust"/>"#),
+        "fenced ```rust block must reference CodeBlockRust (so round-trip preserves the language); got:\n{doc_xml}"
+    );
+    // And the per-language style must be defined and inherit from
+    // the base CodeBlock so it renders consistently in Word.
+    assert!(
+        styles_xml.contains(r#"w:styleId="CodeBlockRust""#),
+        "CodeBlockRust must be defined in styles.xml; got:\n{styles_xml}"
     );
     assert!(
-        !doc_xml.contains(r#"<w:pStyle w:val="CodeBlockRust"/>"#),
-        "language-specific style ID is gone; should use base CodeBlock + CodeLanguage attr"
+        styles_xml.contains(r#"w:styleId="CodeBlock""#),
+        "base CodeBlock style must still be defined; got:\n{styles_xml}"
     );
 
     // Blockquotes → Quote1 / Quote2.
@@ -1599,15 +1617,9 @@ fn f() {}
         "unchecked task list marker must be ☐ (U+2610); got:\n{doc_xml}"
     );
 
-    // styles.xml — every style referenced above must be defined.
-    for sid in [
-        "Code",
-        "Hyperlink",
-        "CodeBlock",
-        "Quote1",
-        "Quote2",
-        "HorizontalRule",
-    ] {
+    // styles.xml — every other style referenced above must be defined
+    // (CodeBlock + CodeBlockRust are checked individually above).
+    for sid in ["Code", "Hyperlink", "Quote1", "Quote2", "HorizontalRule"] {
         let tag = format!(r#"w:styleId="{sid}""#);
         assert!(
             styles_xml.contains(&tag),

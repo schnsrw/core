@@ -95,6 +95,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `- [ ] todo` now emit ☒ (U+2611) / ☐ (U+2610) instead of literal
   `[x]` / `[ ]` text, so the converted DOCX shows recognisable
   checkboxes in Word.
+- **MD → DOCX: GFM table header rows render bold + repeat per page.**
+  The first row of a Markdown table now carries
+  `AttributeKey::TableHeaderRow` (so the DOCX writer emits
+  `<w:tblHeader/>` for header-row repetition across pages) and bold
+  runs (matching the semantic `<th>` of GFM).
+- **MD → DOCX: bullet markers cycle per nesting level.** Level 0 uses
+  `•`, level 1 `○`, level 2 `▪`, then cycling. Ordered lists cycle
+  `1.` → `a.` → `i.` — matching Word's built-in list style cascade so
+  nested levels are visually distinguishable.
+- **MD → DOCX: fenced code language hint survives the DOCX
+  round-trip.** Per-language `CodeBlock<Lang>` styles are registered on
+  the fly (inheriting from the base `CodeBlock`); the writer emits
+  ` ```rust ` → DOCX → ` ```rust ` instead of dropping to ` ``` `.
 
 - **`Format::MdRaw` — Markdown passthrough mode.** Stores the input
   bytes as a single text node so `MdRaw → DocumentModel → MdRaw` is
