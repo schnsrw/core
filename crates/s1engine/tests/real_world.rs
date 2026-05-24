@@ -1482,6 +1482,227 @@ fn md_export_has_word_friendly_spacing_defaults() {
     );
 }
 
+/// Regression for the MD→DOCX compiler pass: every construct the audit
+/// flagged must produce Word-native output. Asserts the most likely
+/// breakage points so a future refactor can't silently regress them.
+#[test]
+fn md_to_docx_compiler_emits_word_native_styles() {
+    use s1engine::{Engine, Format};
+
+    let src = "\
+para with `inline code` and [link](https://example.com).
+
+- top bullet
+  - nested bullet
+
+1. top item
+   1. nested item
+
+```rust
+fn f() {}
+```
+
+> quote
+>
+> > nested quote
+
+---
+
+- [x] done
+- [ ] pending
+";
+
+    let engine = Engine::new();
+    let doc = engine
+        .open_as(src.as_bytes(), Format::Md)
+        .expect("parse md");
+    let docx = doc.export(Format::Docx).expect("export docx");
+    let pkg = s1_ooxml::Package::parse(&docx).expect("parse pkg");
+
+    let doc_xml = pkg
+        .parts
+        .get("word/document.xml")
+        .and_then(|p| match &p.content {
+            s1_ooxml::PartContent::Xml(t) => t.write().ok(),
+            _ => None,
+        })
+        .and_then(|b| String::from_utf8(b).ok())
+        .expect("document.xml");
+    let styles_xml = pkg
+        .parts
+        .get("word/styles.xml")
+        .and_then(|p| match &p.content {
+            s1_ooxml::PartContent::Xml(t) => t.write().ok(),
+            _ => None,
+        })
+        .and_then(|b| String::from_utf8(b).ok())
+        .expect("styles.xml");
+
+    // Lists — top-level items must use ilvl=0 (not 1).
+    assert!(
+        doc_xml.contains(r#"<w:ilvl w:val="0"/>"#),
+        "expected ilvl=0 on top-level list items; got:\n{doc_xml}"
+    );
+    // Nested level → ilvl=1.
+    assert!(
+        doc_xml.contains(r#"<w:ilvl w:val="1"/>"#),
+        "expected ilvl=1 on first-nested list items; got:\n{doc_xml}"
+    );
+
+    // Inline code → rStyle="Code".
+    assert!(
+        doc_xml.contains(r#"<w:rStyle w:val="Code"/>"#),
+        "inline code must reference the Code character style; got:\n{doc_xml}"
+    );
+    // Hyperlink runs → rStyle="Hyperlink".
+    assert!(
+        doc_xml.contains(r#"<w:rStyle w:val="Hyperlink"/>"#),
+        "link runs must reference the Hyperlink character style; got:\n{doc_xml}"
+    );
+    // Code block → pStyle="CodeBlock" (NOT CodeBlockRust).
+    assert!(
+        doc_xml.contains(r#"<w:pStyle w:val="CodeBlock"/>"#),
+        "code blocks must reference CodeBlock; got:\n{doc_xml}"
+    );
+    assert!(
+        !doc_xml.contains(r#"<w:pStyle w:val="CodeBlockRust"/>"#),
+        "language-specific style ID is gone; should use base CodeBlock + CodeLanguage attr"
+    );
+
+    // Blockquotes → Quote1 / Quote2.
+    assert!(
+        doc_xml.contains(r#"<w:pStyle w:val="Quote1"/>"#),
+        "blockquote must reference Quote1; got:\n{doc_xml}"
+    );
+    assert!(
+        doc_xml.contains(r#"<w:pStyle w:val="Quote2"/>"#),
+        "nested blockquote must reference Quote2; got:\n{doc_xml}"
+    );
+
+    // Horizontal rule → HorizontalRule style, NOT pageBreakBefore.
+    assert!(
+        doc_xml.contains(r#"<w:pStyle w:val="HorizontalRule"/>"#),
+        "thematic break must reference HorizontalRule; got:\n{doc_xml}"
+    );
+    assert!(
+        !doc_xml.contains("<w:pageBreakBefore/>"),
+        "thematic break must NOT emit a real page break: {doc_xml}"
+    );
+
+    // Task list checkbox glyphs.
+    assert!(
+        doc_xml.contains('\u{2611}'.to_string().as_str()),
+        "checked task list marker must be ☒ (U+2611); got:\n{doc_xml}"
+    );
+    assert!(
+        doc_xml.contains('\u{2610}'.to_string().as_str()),
+        "unchecked task list marker must be ☐ (U+2610); got:\n{doc_xml}"
+    );
+
+    // styles.xml — every style referenced above must be defined.
+    for sid in [
+        "Code",
+        "Hyperlink",
+        "CodeBlock",
+        "Quote1",
+        "Quote2",
+        "HorizontalRule",
+    ] {
+        let tag = format!(r#"w:styleId="{sid}""#);
+        assert!(
+            styles_xml.contains(&tag),
+            "styles.xml is missing definition for `{sid}`; got:\n{styles_xml}"
+        );
+    }
+}
+
+/// Diagnostic: dump key parts of a DOCX produced from a rich MD source so
+/// we can audit MD→DOCX quality across all constructs (lists, code, quotes,
+/// links, etc.). Ignored by default.
+#[test]
+#[ignore = "diagnostic — run manually to audit MD→DOCX output"]
+fn md_to_docx_compiler_audit() {
+    use s1engine::{Engine, Format};
+
+    let src = "\
+# Heading 1
+
+## Heading 2
+
+Normal paragraph with **bold**, *italic*, ***bold italic***, ~~strike~~, \
+`inline code`, and [a link](https://example.com).
+
+### Lists
+
+- bullet a
+- bullet b
+  - nested b.1
+    - deep b.1.x
+  - nested b.2
+- bullet c
+
+1. first
+2. second
+   1. sub one
+   2. sub two
+3. third
+
+### Code
+
+```rust
+fn main() {
+    println!(\"hello\");
+}
+```
+
+    plain indented block of code
+    line 2
+
+### Blockquote
+
+> One.
+>
+> > Nested two.
+
+### Horizontal rule
+
+before
+
+---
+
+after
+
+### Tasks
+
+- [x] done
+- [ ] pending
+
+### Table
+
+| Col | Other |
+|-----|-------|
+| a   | b     |
+";
+
+    let engine = Engine::new();
+    let doc = engine.open_as(src.as_bytes(), Format::Md).expect("parse");
+    let docx = doc.export(Format::Docx).expect("export");
+
+    let pkg = s1_ooxml::Package::parse(&docx).expect("parse pkg");
+    for part in ["word/document.xml", "word/styles.xml", "word/numbering.xml"] {
+        let body = pkg
+            .parts
+            .get(part)
+            .and_then(|p| match &p.content {
+                s1_ooxml::PartContent::Xml(t) => t.write().ok(),
+                _ => None,
+            })
+            .and_then(|b| String::from_utf8(b).ok())
+            .unwrap_or_else(|| "(missing)".into());
+        eprintln!("\n========== {part} ==========\n{body}");
+    }
+}
+
 /// Diagnostic: dump the actual MD output of selected DOCX fixtures so we can
 /// eyeball list numbering, heading styles, and other formatting that the
 /// word-survival audit can't see. Ignored by default — run manually with

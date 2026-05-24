@@ -51,7 +51,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixtures and an MD → DOCX → MD round-trip — useful when the audit
   reports 96 % and you still need to see what's wrong.
 
+### Fixed
+
+- **MD reader: list levels are now 0-based.** Top-level items used to
+  emit `<w:ilvl w:val="1"/>` in DOCX (one level too deep — 1″ indent
+  instead of 0.5″). Matches the DOCX, TXT, and ODT readers, which all
+  use 0-based levels.
+- **MD → DOCX: thematic break no longer page-breaks the document.**
+  `---` was being mapped to `<w:pageBreakBefore/>` on an empty paragraph
+  — Word would force a new page at every thematic break. Now emits a
+  `HorizontalRule`-styled thin paragraph with a gray bottom border, the
+  way every other Markdown renderer treats `---`.
+- **MD → DOCX: code blocks reference an actual style.** Fenced blocks
+  with a language hint (e.g. ```` ```rust ````) used to reference a
+  `CodeBlockRust` style that was never defined in `word/styles.xml`,
+  so Word rendered them as plain paragraphs. The language hint now
+  lives in `AttributeKey::CodeLanguage`; the styleId is always
+  `CodeBlock`, and the style is defined.
+- **MD → DOCX: inline code uses a real font.** The MD reader used to
+  set `FontFamily="monospace"`, which isn't a real font name — Word
+  fell back to the default. Inline code now references the `Code`
+  character style (Consolas 10pt + light shading), defined in
+  `styles.xml`.
+- **MD → DOCX: hyperlinks render as Word-native links.** Link runs
+  apply the `Hyperlink` character style (blue + underline) so they
+  appear blue and underlined when opened in Word; they previously
+  rendered as plain black text.
+
 ### Added
+
+- **Markdown compiler-style styles in MD → DOCX.** The MD reader now
+  installs a full set of styles every Markdown renderer needs in
+  `word/styles.xml`:
+  - `Code` character style — Consolas 10pt, light gray highlight.
+  - `CodeBlock` paragraph style — Consolas 10pt, gray box border,
+    single-line spacing, kept together.
+  - `Quote1..Quote5` paragraph styles — progressive left indent
+    (18pt × depth), italic, gray left border bar.
+  - `Hyperlink` character style — blue #0563C1, single underline.
+  - `HorizontalRule` paragraph style — thin 2pt paragraph with a 1pt
+    gray bottom border.
+- **Task list checkboxes render as Unicode glyphs.** `- [x] done` and
+  `- [ ] todo` now emit ☒ (U+2611) / ☐ (U+2610) instead of literal
+  `[x]` / `[ ]` text, so the converted DOCX shows recognisable
+  checkboxes in Word.
 
 - **`Format::MdRaw` — Markdown passthrough mode.** Stores the input
   bytes as a single text node so `MdRaw → DocumentModel → MdRaw` is

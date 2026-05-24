@@ -147,28 +147,25 @@ fn process_event(
                     NodeType::Paragraph,
                 )?;
                 if let Some(node) = doc.node_mut(para_id) {
-                    // Encode language into the StyleId so DOCX preserves it
-                    // automatically via pStyle reference (no separate attribute
-                    // needed). Example: "CodeBlock" or "CodeBlockRust".
-                    let style_id = match &kind {
-                        pulldown_cmark::CodeBlockKind::Fenced(lang) if !lang.is_empty() => {
-                            let mut s = String::from("CodeBlock");
-                            let lang_s = lang.to_string();
-                            // Capitalise the language so the style ID is a
-                            // single identifier (DOCX pStyle val must be
-                            // identifier-safe; spaces / hyphens are not
-                            // common). e.g. "rust" → "Rust".
-                            let mut chars = lang_s.chars();
-                            if let Some(first) = chars.next() {
-                                s.extend(first.to_uppercase());
-                                s.push_str(chars.as_str());
-                            }
-                            s
+                    // Single canonical paragraph style for all fenced
+                    // code blocks; the fence's language hint lives in
+                    // the separate CodeLanguage attribute. Earlier
+                    // versions encoded language into the styleId (e.g.
+                    // "CodeBlockRust"), but that referenced styles
+                    // that don't exist in word/styles.xml, leaving the
+                    // block unstyled in Word.
+                    node.attributes.set(
+                        AttributeKey::StyleId,
+                        AttributeValue::String("CodeBlock".into()),
+                    );
+                    if let pulldown_cmark::CodeBlockKind::Fenced(lang) = &kind {
+                        if !lang.is_empty() {
+                            node.attributes.set(
+                                AttributeKey::CodeLanguage,
+                                AttributeValue::String(lang.to_string()),
+                            );
                         }
-                        _ => "CodeBlock".to_string(),
-                    };
-                    node.attributes
-                        .set(AttributeKey::StyleId, AttributeValue::String(style_id));
+                    }
                 }
                 ctx.body_child_index += 1;
                 ctx.container_stack.push((para_id, 0));
@@ -225,7 +222,14 @@ fn process_event(
                 let mut para = Node::new(para_id, NodeType::Paragraph);
 
                 if let Some(list_state) = ctx.list_stack.last() {
-                    let level = ctx.list_stack.len() as u8;
+                    // 0-based level matches the rest of the codebase: DOCX
+                    // <w:ilvl w:val="0"/> for top-level items, TXT writer
+                    // uses `level` directly as indent depth. The MD reader
+                    // previously emitted 1-based levels, which made the
+                    // DOCX writer offset every list one level too deep
+                    // (top bullets ended up at 1440 twips / 1″ instead of
+                    // 720 twips / 0.5″).
+                    let level = (ctx.list_stack.len() as u8).saturating_sub(1);
                     let num_format = if list_state.ordered {
                         ListFormat::Decimal
                     } else {
@@ -453,7 +457,9 @@ fn process_event(
         }
 
         Event::TaskListMarker(checked) => {
-            let marker = if checked { "[x] " } else { "[ ] " };
+            // Real Unicode glyphs render in any font; "[x]"/"[ ]" text
+            // would round-trip but doesn't look like a checkbox in Word.
+            let marker = if checked { "\u{2611} " } else { "\u{2610} " };
             emit_text(doc, ctx, marker)?;
         }
 
@@ -488,10 +494,16 @@ fn process_event(
         }
 
         Event::Rule => {
+            // CommonMark's `---` is a thematic break — a thin horizontal
+            // divider, NOT a page break. Use the HorizontalRule paragraph
+            // style (thin paragraph with a bottom border, see
+            // install_default_styles).
             let para_id = doc.next_id();
             let mut para = Node::new(para_id, NodeType::Paragraph);
-            para.attributes
-                .set(AttributeKey::PageBreakBefore, AttributeValue::Bool(true));
+            para.attributes.set(
+                AttributeKey::StyleId,
+                AttributeValue::String("HorizontalRule".into()),
+            );
             doc.insert_node(ctx.body_id, ctx.body_child_index, para)
                 .map_err(|e| MdError::Model(e.to_string()))?;
             ctx.body_child_index += 1;
@@ -532,10 +544,12 @@ fn emit_text(doc: &mut DocumentModel, ctx: &mut ReadContext, text: &str) -> Resu
             .set(AttributeKey::Strikethrough, AttributeValue::Bool(true));
     }
     if ctx.code {
-        run.attributes.set(
-            AttributeKey::FontFamily,
-            AttributeValue::String("monospace".into()),
-        );
+        // Apply the `Code` character style — that style carries the
+        // Consolas/10pt + light gray shading so Word renders the run
+        // as a recognisable code span. Don't also set FontFamily, since
+        // explicit run rPr would override the style's font.
+        run.attributes
+            .set(AttributeKey::StyleId, AttributeValue::String("Code".into()));
     }
     if let Some(ref url) = ctx.link_url {
         run.attributes.set(
@@ -546,6 +560,17 @@ fn emit_text(doc: &mut DocumentModel, ctx: &mut ReadContext, text: &str) -> Resu
             run.attributes.set(
                 AttributeKey::HyperlinkTooltip,
                 AttributeValue::String(title.clone()),
+            );
+        }
+        // Word renders unstyled hyperlinks as plain black text. Apply
+        // the `Hyperlink` character style so the link shows up blue +
+        // underlined like users expect — unless we've already applied
+        // a more specific style (e.g. `Code` on inline code inside
+        // a link, which would be unusual but possible).
+        if !run.attributes.contains(&AttributeKey::StyleId) {
+            run.attributes.set(
+                AttributeKey::StyleId,
+                AttributeValue::String("Hyperlink".into()),
             );
         }
     }
@@ -577,15 +602,21 @@ fn insert_node(
         .map_err(|e| MdError::Model(e.to_string()))
 }
 
-/// Stamp body defaults and Heading1..6 style definitions onto a fresh
-/// document so the resulting DOCX opens with Word-friendly spacing
-/// instead of falling back to Word's built-in `Heading 1` (which is
-/// huge) or to no spacing at all between paragraphs.
+/// Stamp body defaults and the full set of styles a Markdown-as-Word
+/// document needs so the resulting DOCX opens with Word-friendly
+/// formatting on every construct: headings, code, blockquotes,
+/// hyperlinks, horizontal rules.
 ///
-/// Spacing values follow the pandoc-style neutral defaults that most
-/// users expect from a "Markdown → Word" conversion: body 11pt with
-/// 8pt-after and 1.15 line spacing; headings bold, sized by level, with
-/// generous before-spacing that decreases with depth.
+/// Each style is the one a Markdown reader would expect Pandoc/Marked
+/// to produce, scaled to look right in Word:
+///   - `Normal` — body default (Calibri 11pt, 1.15 line, 8pt-after).
+///   - `Heading1..6` — bold, sized 18→11pt, before-spacing 24→8pt.
+///   - `Code` — inline code character style (Consolas 10pt + shading).
+///   - `CodeBlock` — paragraph style for fenced blocks (Consolas 10pt,
+///     no spacing, light shading, kept together).
+///   - `Quote1..Quote5` — blockquote levels with left indent + bar.
+///   - `Hyperlink` — character style for links (blue + underlined).
+///   - `HorizontalRule` — thin paragraph with a bottom border.
 fn install_default_styles(doc: &mut DocumentModel) {
     {
         let defaults = doc.doc_defaults_mut();
@@ -599,6 +630,7 @@ fn install_default_styles(doc: &mut DocumentModel) {
     normal.is_default = true;
     doc.set_style(normal);
 
+    // ── Headings ────────────────────────────────────────────────────
     // (level, font_size_pt, space_before_pt, space_after_pt)
     let heading_spec: [(u8, f64, f64, f64); 6] = [
         (1, 18.0, 24.0, 6.0),
@@ -622,6 +654,121 @@ fn install_default_styles(doc: &mut DocumentModel) {
         }
         s.attributes = attrs;
         doc.set_style(s);
+    }
+
+    // ── Inline code (character style) ───────────────────────────────
+    // Consolas is shipped with every Windows / Office build and most
+    // recent macOS versions; falls back gracefully to Courier New.
+    let mut code = Style::new("Code", "Code", StyleType::Character);
+    code.attributes = AttributeMap::new().font_family("Consolas").font_size(10.0);
+    code.attributes.set(
+        AttributeKey::HighlightColor,
+        AttributeValue::Color(Color::from_hex("F4F4F4").unwrap_or(Color::WHITE)),
+    );
+    doc.set_style(code);
+
+    // ── Fenced code block (paragraph style) ─────────────────────────
+    let mut code_block = Style::new("CodeBlock", "Code Block", StyleType::Paragraph);
+    code_block.parent_id = Some("Normal".into());
+    code_block.next_style_id = Some("Normal".into());
+    let mut cb_attrs = AttributeMap::new().font_family("Consolas").font_size(10.0);
+    cb_attrs.set(AttributeKey::SpacingBefore, AttributeValue::Float(6.0));
+    cb_attrs.set(AttributeKey::SpacingAfter, AttributeValue::Float(6.0));
+    cb_attrs.set(
+        AttributeKey::LineSpacing,
+        AttributeValue::LineSpacing(s1_model::LineSpacing::Single),
+    );
+    cb_attrs.set(
+        AttributeKey::ParagraphBorders,
+        AttributeValue::Borders(Borders {
+            top: Some(code_border()),
+            bottom: Some(code_border()),
+            left: Some(code_border()),
+            right: Some(code_border()),
+            ..Default::default()
+        }),
+    );
+    code_block.attributes = cb_attrs;
+    doc.set_style(code_block);
+
+    // ── Blockquotes ────────────────────────────────────────────────
+    // CommonMark nests blockquotes; the MD reader encodes depth into
+    // QuoteN. Define styles up through Quote5 (rare to nest deeper).
+    for depth in 1u32..=5 {
+        let style_id = format!("Quote{depth}");
+        let mut q = Style::new(&style_id, &style_id, StyleType::Paragraph);
+        q.parent_id = Some("Normal".into());
+        q.next_style_id = Some("Normal".into());
+        let mut q_attrs = AttributeMap::new().italic(true);
+        let indent_pt = 18.0 * depth as f64;
+        q_attrs.set(AttributeKey::IndentLeft, AttributeValue::Float(indent_pt));
+        q_attrs.set(AttributeKey::SpacingBefore, AttributeValue::Float(6.0));
+        q_attrs.set(AttributeKey::SpacingAfter, AttributeValue::Float(6.0));
+        // Vertical bar on the left, matching the visual style of a
+        // pull-quote in a typical Markdown renderer.
+        q_attrs.set(
+            AttributeKey::ParagraphBorders,
+            AttributeValue::Borders(Borders {
+                left: Some(BorderSide {
+                    style: BorderStyle::Thick,
+                    width: 2.0,
+                    color: Color::from_hex("CCCCCC").unwrap_or(Color::BLACK),
+                    spacing: 4.0,
+                }),
+                ..Default::default()
+            }),
+        );
+        q.attributes = q_attrs;
+        doc.set_style(q);
+    }
+
+    // ── Hyperlinks ─────────────────────────────────────────────────
+    let mut link = Style::new("Hyperlink", "Hyperlink", StyleType::Character);
+    let mut link_attrs = AttributeMap::new();
+    link_attrs.set(
+        AttributeKey::Color,
+        AttributeValue::Color(Color::from_hex("0563C1").unwrap_or(Color::BLACK)),
+    );
+    link_attrs.set(
+        AttributeKey::Underline,
+        AttributeValue::UnderlineStyle(s1_model::UnderlineStyle::Single),
+    );
+    link.attributes = link_attrs;
+    doc.set_style(link);
+
+    // ── Horizontal rule ────────────────────────────────────────────
+    // A thin paragraph with a 1pt bottom border draws the divider line
+    // CommonMark's `---` is meant to produce. Page-break-before would
+    // wipe the page; we emit a divider rule instead.
+    let mut hr = Style::new("HorizontalRule", "Horizontal Rule", StyleType::Paragraph);
+    hr.parent_id = Some("Normal".into());
+    hr.next_style_id = Some("Normal".into());
+    let mut hr_attrs = AttributeMap::new().font_size(2.0);
+    hr_attrs.set(AttributeKey::SpacingBefore, AttributeValue::Float(6.0));
+    hr_attrs.set(AttributeKey::SpacingAfter, AttributeValue::Float(6.0));
+    hr_attrs.set(
+        AttributeKey::ParagraphBorders,
+        AttributeValue::Borders(Borders {
+            bottom: Some(BorderSide {
+                style: BorderStyle::Single,
+                width: 1.0,
+                color: Color::from_hex("BFBFBF").unwrap_or(Color::BLACK),
+                spacing: 1.0,
+            }),
+            ..Default::default()
+        }),
+    );
+    hr.attributes = hr_attrs;
+    doc.set_style(hr);
+}
+
+/// A subtle gray border used to box fenced code blocks.
+fn code_border() -> BorderSide {
+    BorderSide {
+        style: BorderStyle::Single,
+        width: 0.5,
+        color: Color::from_hex("E0E0E0").unwrap_or(Color::BLACK),
+        spacing: 4.0,
     }
 }
 
@@ -925,9 +1072,13 @@ mod tests {
         let body = doc.node(body_id).unwrap();
         let para = doc.node(body.children[0]).unwrap();
         let run = doc.node(para.children[0]).unwrap();
+        // The MD reader tags inline-code runs with the `Code` character
+        // style; the actual monospace font + light shading live on the
+        // style definition, not on the run, so styles.xml stays the
+        // single source of truth for code formatting.
         assert_eq!(
-            run.attributes.get_string(&AttributeKey::FontFamily),
-            Some("monospace")
+            run.attributes.get_string(&AttributeKey::StyleId),
+            Some("Code")
         );
     }
 
@@ -985,23 +1136,30 @@ mod tests {
 
     #[test]
     fn read_nested_list() {
+        // Levels are 0-based: top-level items have level=0, the first
+        // nested level has level=1.
         let doc = read("- Outer\n  - Inner").unwrap();
         let body_id = doc.body_id().unwrap();
         let body = doc.node(body_id).unwrap();
 
+        let mut found_top = false;
         let mut found_nested = false;
         for &child_id in &body.children {
             if let Some(node) = doc.node(child_id) {
                 if let Some(AttributeValue::ListInfo(info)) =
                     node.attributes.get(&AttributeKey::ListInfo)
                 {
-                    if info.level >= 2 {
+                    if info.level == 0 {
+                        found_top = true;
+                    }
+                    if info.level >= 1 {
                         found_nested = true;
                     }
                 }
             }
         }
-        assert!(found_nested, "Expected nested list item at level >= 2");
+        assert!(found_top, "expected a top-level item at level 0");
+        assert!(found_nested, "expected a nested item at level >= 1");
     }
 
     #[test]
@@ -1035,12 +1193,17 @@ mod tests {
         let body_id = doc.body_id().unwrap();
         let body = doc.node(body_id).unwrap();
 
+        // The thematic break is marked with the HorizontalRule style so
+        // the DOCX writer emits a thin bottom-border paragraph (and the
+        // MD writer round-trips it back to `---`). Earlier versions used
+        // PageBreakBefore, which actually made Word force-break to a
+        // new page — visually broken.
         let has_rule = body.children.iter().any(|&id| {
             doc.node(id)
-                .map(|n| n.attributes.get_bool(&AttributeKey::PageBreakBefore) == Some(true))
+                .map(|n| n.attributes.get_string(&AttributeKey::StyleId) == Some("HorizontalRule"))
                 .unwrap_or(false)
         });
-        assert!(has_rule, "Expected a thematic break paragraph");
+        assert!(has_rule, "Expected a HorizontalRule paragraph");
     }
 
     #[test]

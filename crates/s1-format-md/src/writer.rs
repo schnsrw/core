@@ -139,18 +139,27 @@ fn write_block(
 
     match node.node_type {
         NodeType::Paragraph => {
-            // Fenced code block: paragraph with StyleId starting with "CodeBlock"
+            // Fenced code block: paragraph with StyleId starting with "CodeBlock".
+            // Language hint lives in the separate CodeLanguage attribute;
+            // fall back to parsing the styleId for legacy documents that
+            // encoded the language as "CodeBlockRust" etc.
             let is_code_block = node
                 .attributes
                 .get_string(&AttributeKey::StyleId)
                 .map(|s| s.starts_with("CodeBlock"))
                 .unwrap_or(false);
             if is_code_block {
-                let sid = node
+                let lang_from_attr = node
                     .attributes
-                    .get_string(&AttributeKey::StyleId)
-                    .unwrap_or("CodeBlock");
-                let lang = sid.strip_prefix("CodeBlock").unwrap_or("").to_lowercase();
+                    .get_string(&AttributeKey::CodeLanguage)
+                    .map(|s| s.to_string());
+                let lang = lang_from_attr.unwrap_or_else(|| {
+                    let sid = node
+                        .attributes
+                        .get_string(&AttributeKey::StyleId)
+                        .unwrap_or("CodeBlock");
+                    sid.strip_prefix("CodeBlock").unwrap_or("").to_lowercase()
+                });
                 out.push_str("```");
                 out.push_str(&lang);
                 out.push('\n');
@@ -200,9 +209,9 @@ fn write_block(
             if let Some(AttributeValue::ListInfo(info)) =
                 node.attributes.get(&AttributeKey::ListInfo)
             {
-                // MD reader sets level = 1 for top-level items (depth from
-                // root list). Indent only nested items.
-                let depth = info.level.saturating_sub(1) as usize;
+                // Levels are 0-based: top-level items don't indent, each
+                // additional level adds two spaces.
+                let depth = info.level as usize;
                 if depth > 0 {
                     out.push_str(&"  ".repeat(depth));
                 }
@@ -231,10 +240,18 @@ fn write_block(
                 }
             }
 
-            // Check for thematic break (PageBreakBefore on empty paragraph)
-            if node.attributes.get_bool(&AttributeKey::PageBreakBefore) == Some(true)
-                && node.children.is_empty()
-            {
+            // Check for thematic break — either the canonical
+            // HorizontalRule style (what the MD reader emits) or a
+            // legacy PageBreakBefore on an empty paragraph (older
+            // round-trips and DOCX inputs).
+            let is_hr = node
+                .attributes
+                .get_string(&AttributeKey::StyleId)
+                .map(|s| s == "HorizontalRule")
+                .unwrap_or(false)
+                || (node.attributes.get_bool(&AttributeKey::PageBreakBefore) == Some(true)
+                    && node.children.is_empty());
+            if is_hr {
                 out.push_str("---\n");
                 return;
             }
@@ -342,11 +359,19 @@ fn write_paragraph_runs(doc: &DocumentModel, para_id: NodeId, out: &mut String) 
                 let bold = n.attributes.get_bool(&AttributeKey::Bold) == Some(true);
                 let italic = n.attributes.get_bool(&AttributeKey::Italic) == Some(true);
                 let strike = n.attributes.get_bool(&AttributeKey::Strikethrough) == Some(true);
+                // Recognise inline code via either signal: the canonical
+                // `Code` character style (what the MD reader emits today)
+                // or a monospace FontFamily (legacy fallback for runs
+                // produced by DOCX inputs that don't use the style).
                 let code = n
                     .attributes
-                    .get_string(&AttributeKey::FontFamily)
-                    .map(|f| f == "monospace")
-                    .unwrap_or(false);
+                    .get_string(&AttributeKey::StyleId)
+                    .map(|s| s == "Code")
+                    .unwrap_or(false)
+                    || n.attributes
+                        .get_string(&AttributeKey::FontFamily)
+                        .map(|f| f == "monospace")
+                        .unwrap_or(false);
                 let url = n.attributes.get_string(&AttributeKey::HyperlinkUrl);
                 let title = n.attributes.get_string(&AttributeKey::HyperlinkTooltip);
                 let mut text = String::new();
@@ -612,9 +637,14 @@ fn write_inline(doc: &DocumentModel, node_id: NodeId, out: &mut String) {
             let strike = node.attributes.get_bool(&AttributeKey::Strikethrough) == Some(true);
             let code = node
                 .attributes
-                .get_string(&AttributeKey::FontFamily)
-                .map(|f| f == "monospace")
-                .unwrap_or(false);
+                .get_string(&AttributeKey::StyleId)
+                .map(|s| s == "Code")
+                .unwrap_or(false)
+                || node
+                    .attributes
+                    .get_string(&AttributeKey::FontFamily)
+                    .map(|f| f == "monospace")
+                    .unwrap_or(false);
             let url = node.attributes.get_string(&AttributeKey::HyperlinkUrl);
 
             // Collect inner text
