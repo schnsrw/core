@@ -50,8 +50,49 @@ pub fn write(doc: &DocumentModel) -> String {
 }
 
 /// Extract heading level from StyleId (e.g. "Heading1" -> 1).
-fn heading_level(style_id: &str) -> Option<u8> {
-    style_id.strip_prefix("Heading")?.parse::<u8>().ok()
+///
+/// Falls back to the style's `name` field when the styleId is localized
+/// (e.g. German "berschrift1" / "Überschrift1" with name "heading 1",
+/// French "Titre1" with name "heading 1"). Also maps the special
+/// `Title` / `Subtitle` styles to H1 / H2 so they survive into Markdown.
+fn heading_level(doc: &DocumentModel, style_id: &str) -> Option<u8> {
+    // Strict ID first — covers the canonical case.
+    if let Some(level) = style_id
+        .strip_prefix("Heading")
+        .and_then(|n| n.parse::<u8>().ok())
+    {
+        return clamp_heading_level(level);
+    }
+
+    let style = doc.style_by_id(style_id)?;
+    let name = style.name.trim().to_lowercase();
+
+    if name == "title" {
+        return Some(1);
+    }
+    if name == "subtitle" {
+        return Some(2);
+    }
+
+    // "heading 1", "Heading1", "heading-1" all resolve via stripping the
+    // prefix and parsing the trailing digits.
+    let compact: String = name
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-' && *c != '_')
+        .collect();
+    if let Some(rest) = compact.strip_prefix("heading") {
+        return rest.parse::<u8>().ok().and_then(clamp_heading_level);
+    }
+    None
+}
+
+/// CommonMark only defines H1..H6.
+fn clamp_heading_level(level: u8) -> Option<u8> {
+    if (1..=6).contains(&level) {
+        Some(level)
+    } else {
+        None
+    }
 }
 
 /// Emit an inline code span using enough backticks to avoid collision with
@@ -147,7 +188,7 @@ fn write_block(
 
             // Check for heading via StyleId
             if let Some(style_id) = node.attributes.get_string(&AttributeKey::StyleId) {
-                if let Some(level) = heading_level(style_id) {
+                if let Some(level) = heading_level(doc, style_id) {
                     for _ in 0..level {
                         out.push('#');
                     }
@@ -839,6 +880,51 @@ mod tests {
         assert!(md.contains("# H1"));
         assert!(md.contains("## H2"));
         assert!(md.contains("### H3"));
+    }
+
+    /// Regression: DOCX written by localized Office builds (e.g. German Word)
+    /// uses localized style IDs like "berschrift1" / "Überschrift1" with the
+    /// canonical name "heading 1". The writer must recognise these via the
+    /// style table lookup, otherwise headings flatten to plain paragraphs.
+    #[test]
+    fn write_heading_recognises_localized_styles() {
+        use s1_model::{Style, StyleType};
+
+        let mut doc = DocumentModel::new();
+        let body_id = doc.body_id().unwrap();
+
+        // Localized style id with canonical name.
+        doc.set_style(Style::new("berschrift1", "heading 1", StyleType::Paragraph));
+        doc.set_style(Style::new("Titre2", "Heading 2", StyleType::Paragraph));
+        doc.set_style(Style::new("DocTitle", "Title", StyleType::Paragraph));
+        doc.set_style(Style::new("DocSub", "Subtitle", StyleType::Paragraph));
+
+        for (i, (sid, text)) in [
+            ("berschrift1", "German H1"),
+            ("Titre2", "French H2"),
+            ("DocTitle", "Big Title"),
+            ("DocSub", "Sub line"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let para_id = doc.next_id();
+            let mut para = Node::new(para_id, NodeType::Paragraph);
+            para.attributes
+                .set(AttributeKey::StyleId, AttributeValue::String((*sid).into()));
+            doc.insert_node(body_id, i, para).unwrap();
+            let run_id = doc.next_id();
+            doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
+                .unwrap();
+            let t_id = doc.next_id();
+            doc.insert_node(run_id, 0, Node::text(t_id, *text)).unwrap();
+        }
+
+        let md = write(&doc);
+        assert!(md.contains("# German H1"), "md:\n{md}");
+        assert!(md.contains("## French H2"), "md:\n{md}");
+        assert!(md.contains("# Big Title"), "md:\n{md}");
+        assert!(md.contains("## Sub line"), "md:\n{md}");
     }
 
     #[test]
