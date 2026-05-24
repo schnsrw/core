@@ -197,12 +197,18 @@ pub enum ListFormat {
 }
 
 /// Border configuration for a box (paragraph, cell, table).
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `inside_h` and `inside_v` only apply to tables — they describe the
+/// horizontal and vertical borders *between* cells. They are ignored for
+/// paragraph and cell border contexts (where they should be left `None`).
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Borders {
     pub top: Option<BorderSide>,
     pub bottom: Option<BorderSide>,
     pub left: Option<BorderSide>,
     pub right: Option<BorderSide>,
+    pub inside_h: Option<BorderSide>,
+    pub inside_v: Option<BorderSide>,
 }
 
 /// A single border side.

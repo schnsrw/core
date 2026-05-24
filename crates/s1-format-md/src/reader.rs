@@ -4,8 +4,8 @@
 
 use pulldown_cmark::{Alignment as CmAlignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use s1_model::{
-    Alignment, AttributeKey, AttributeValue, DocumentModel, ListFormat, ListInfo, Node, NodeId,
-    NodeType,
+    Alignment, AttributeKey, AttributeValue, BorderSide, BorderStyle, Borders, Color,
+    DocumentModel, ListFormat, ListInfo, Node, NodeId, NodeType,
 };
 
 use crate::MdError;
@@ -300,6 +300,17 @@ fn process_event(
                     table_id,
                     NodeType::Table,
                 )?;
+                // CommonMark / GFM tables have no border syntax, but Word
+                // renders unbordered tables as invisible grids — UX-hostile.
+                // Force the industry-default 0.5pt black single-line border
+                // on all six sides (outer + inside-H + inside-V) so the
+                // converted DOCX looks like a normal table when opened.
+                if let Some(table_node) = doc.node_mut(table_id) {
+                    table_node.attributes.set(
+                        AttributeKey::TableBorders,
+                        AttributeValue::Borders(default_md_table_borders()),
+                    );
+                }
                 ctx.body_child_index += 1;
                 ctx.in_table = true;
                 ctx.table_id = Some(table_id);
@@ -560,6 +571,61 @@ fn insert_node(
 ) -> Result<(), MdError> {
     doc.insert_node(parent_id, child_index, Node::new(node_id, node_type))
         .map_err(|e| MdError::Model(e.to_string()))
+}
+
+/// Default border decoration applied to every Markdown table on the way
+/// into DOCX. GFM tables don't carry border info, but unbordered tables
+/// render as invisible grids in Word — visually broken. A thin single
+/// black line on all six edges matches what almost every Word table
+/// uses by default.
+fn default_md_table_borders() -> Borders {
+    let side = BorderSide {
+        style: BorderStyle::Single,
+        width: 0.5,
+        color: Color::BLACK,
+        spacing: 0.0,
+    };
+    Borders {
+        top: Some(side.clone()),
+        bottom: Some(side.clone()),
+        left: Some(side.clone()),
+        right: Some(side.clone()),
+        inside_h: Some(side.clone()),
+        inside_v: Some(side),
+    }
+}
+
+#[cfg(test)]
+mod md_table_border_tests {
+    use super::*;
+
+    #[test]
+    fn md_table_carries_default_borders() {
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let doc = read(md).unwrap();
+        let body_id = doc.body_id().unwrap();
+        let body = doc.node(body_id).unwrap();
+        let table_id = body
+            .children
+            .iter()
+            .find(|&&id| doc.node(id).map(|n| n.node_type) == Some(NodeType::Table))
+            .copied()
+            .expect("table");
+        let table = doc.node(table_id).unwrap();
+        let borders = match table.attributes.get(&AttributeKey::TableBorders) {
+            Some(AttributeValue::Borders(b)) => b,
+            _ => panic!("expected TableBorders on MD table"),
+        };
+        assert!(borders.top.is_some(), "top");
+        assert!(borders.bottom.is_some(), "bottom");
+        assert!(borders.left.is_some(), "left");
+        assert!(borders.right.is_some(), "right");
+        assert!(borders.inside_h.is_some(), "insideH");
+        assert!(borders.inside_v.is_some(), "insideV");
+        let top = borders.top.as_ref().unwrap();
+        assert_eq!(top.color, Color::BLACK);
+        assert_eq!(top.style, BorderStyle::Single);
+    }
 }
 
 /// Register a numbering definition (abstract + instance) for a Markdown list.

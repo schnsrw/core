@@ -1291,6 +1291,47 @@ fn md_through_docx_fidelity_audit() {
     }
 }
 
+/// Regression: tables produced from Markdown must end up with visible
+/// borders in the exported DOCX. CommonMark / GFM carry no border info,
+/// but unbordered tables render as invisible grids in Word, so the MD
+/// reader injects a default thin-black-line border on all six edges.
+#[test]
+fn md_table_export_has_visible_borders() {
+    use s1engine::{Engine, Format};
+
+    let md = "| Col A | Col B |\n|-------|-------|\n| 1     | 2     |\n| 3     | 4     |\n";
+    let engine = Engine::new();
+    let doc = engine.open_as(md.as_bytes(), Format::Md).expect("parse md");
+    let docx = doc.export(Format::Docx).expect("export docx");
+
+    let pkg = s1_ooxml::Package::parse(&docx).expect("parse pkg");
+    let doc_xml = pkg
+        .parts
+        .get("word/document.xml")
+        .and_then(|p| match &p.content {
+            s1_ooxml::PartContent::Xml(t) => t.write().ok(),
+            _ => None,
+        })
+        .and_then(|b| String::from_utf8(b).ok())
+        .expect("document.xml");
+
+    assert!(
+        doc_xml.contains("<w:tblBorders>"),
+        "expected tblBorders in document.xml; got:\n{doc_xml}"
+    );
+    for side in ["top", "left", "bottom", "right", "insideH", "insideV"] {
+        let tag = format!(r#"<w:{side} w:val="single""#);
+        assert!(
+            doc_xml.contains(&tag),
+            "expected `{tag}` in document.xml; got:\n{doc_xml}"
+        );
+    }
+    assert!(
+        doc_xml.contains(r#"w:color="000000""#),
+        "expected black borders; got:\n{doc_xml}"
+    );
+}
+
 #[cfg(all(feature = "pdf", feature = "docx"))]
 #[test]
 fn embedded_fonts_load_into_db() {

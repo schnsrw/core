@@ -1990,6 +1990,7 @@ mod tests {
                 bottom: None,
                 left: None,
                 right: None,
+                ..Default::default()
             }),
         );
         doc.insert_node(body_id, 0, para).unwrap();

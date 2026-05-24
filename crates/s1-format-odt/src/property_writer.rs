@@ -437,6 +437,7 @@ mod tests {
                 }),
                 left: None,
                 right: None,
+                ..Default::default()
             }),
         );
         let xml = write_paragraph_properties(&attrs);

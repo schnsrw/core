@@ -952,7 +952,12 @@ fn write_row_properties(attrs: &s1_model::AttributeMap) -> String {
     trp
 }
 
-/// Write border sides (top, bottom, left, right) shared between table and cell borders.
+/// Write border sides shared between table and cell borders.
+///
+/// `insideH` / `insideV` apply only at the table level (rendering the
+/// borders between cells); they are ignored by Word when emitted on
+/// paragraph or cell border elements, so it is safe to forward them
+/// unconditionally.
 fn write_borders(borders: &Borders, xml: &mut String) {
     if let Some(ref side) = borders.top {
         write_border_side("top", side, xml);
@@ -965,6 +970,12 @@ fn write_borders(borders: &Borders, xml: &mut String) {
     }
     if let Some(ref side) = borders.right {
         write_border_side("right", side, xml);
+    }
+    if let Some(ref side) = borders.inside_h {
+        write_border_side("insideH", side, xml);
+    }
+    if let Some(ref side) = borders.inside_v {
+        write_border_side("insideV", side, xml);
     }
 }
 
@@ -2379,6 +2390,7 @@ mod tests {
             }),
             left: None,
             right: None,
+            ..Default::default()
         };
         para.attributes.set(
             AttributeKey::ParagraphBorders,

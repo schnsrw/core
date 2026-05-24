@@ -239,6 +239,7 @@ pub fn parse_paragraph_properties(e: &BytesStart<'_>) -> AttributeMap {
         bottom: bottom.or_else(|| all.clone()),
         left: left.or_else(|| all.clone()),
         right: right.or(all),
+        ..Default::default()
     };
 
     if borders.top.is_some()
@@ -419,6 +420,7 @@ pub fn parse_table_cell_properties(e: &BytesStart<'_>) -> AttributeMap {
         bottom: bottom.or_else(|| all.clone()),
         left: left.or_else(|| all.clone()),
         right: right.or(all),
+        ..Default::default()
     };
 
     if borders.top.is_some()

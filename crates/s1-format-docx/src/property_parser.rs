@@ -860,12 +860,7 @@ fn parse_width(e: &quick_xml::events::BytesStart<'_>) -> Option<TableWidth> {
 /// Parse a borders element (`<w:tblBorders>` or `<w:tcBorders>`).
 /// Parse border elements (top/bottom/left/right) until the given end tag.
 pub fn parse_borders(reader: &mut Reader<&[u8]>, end_tag: &[u8]) -> Result<Borders, DocxError> {
-    let mut borders = Borders {
-        top: None,
-        bottom: None,
-        left: None,
-        right: None,
-    };
+    let mut borders = Borders::default();
 
     loop {
         match reader.read_event() {
@@ -877,7 +872,8 @@ pub fn parse_borders(reader: &mut Reader<&[u8]>, end_tag: &[u8]) -> Result<Borde
                     b"bottom" => borders.bottom = side,
                     b"left" | b"start" => borders.left = side,
                     b"right" | b"end" => borders.right = side,
-                    // insideH/insideV are table-level; skip for now
+                    b"insideH" => borders.inside_h = side,
+                    b"insideV" => borders.inside_v = side,
                     _ => {}
                 }
             }
@@ -889,6 +885,8 @@ pub fn parse_borders(reader: &mut Reader<&[u8]>, end_tag: &[u8]) -> Result<Borde
                     b"bottom" => borders.bottom = side,
                     b"left" | b"start" => borders.left = side,
                     b"right" | b"end" => borders.right = side,
+                    b"insideH" => borders.inside_h = side,
+                    b"insideV" => borders.inside_v = side,
                     _ => {}
                 }
                 skip_to_end(reader)?;
