@@ -172,17 +172,22 @@ fn write_block(
                     | ListFormat::LowerRoman
                     | ListFormat::UpperRoman => {
                         let key = (info.num_id, info.level);
-                        let counter = list_counters
-                            .entry(key)
-                            .or_insert_with(|| info.start.unwrap_or(1).saturating_sub(1));
+                        // Counters persist across non-list paragraphs so DOCX
+                        // continuation lists (e.g. SDS-style section headings
+                        // numbered 14, 15, 16 with intervening prose) keep
+                        // their numbers instead of resetting to 1.
+                        // An explicit `info.start` resets the counter to that
+                        // value — this is how Markdown's `5. Item` syntax and
+                        // DOCX `<w:lvlOverride><w:startOverride/>` propagate.
+                        let counter = match info.start {
+                            Some(s) => list_counters.entry(key).or_insert(s.saturating_sub(1)),
+                            None => list_counters.entry(key).or_insert(0),
+                        };
                         *counter += 1;
                         out.push_str(&format!("{}. ", counter));
                     }
                     _ => out.push_str("- "),
                 }
-            } else {
-                // Non-list paragraph resets counters
-                list_counters.clear();
             }
 
             // Check for thematic break (PageBreakBefore on empty paragraph)
@@ -1007,6 +1012,56 @@ mod tests {
         let md = write(&doc);
         assert!(md.contains("1. Item 1"), "md: {md}");
         assert!(md.contains("2. Item 2"), "md: {md}");
+    }
+
+    /// Regression: DOCX continuation-numbered lists (e.g. SDS section
+    /// headings 14, 15, 16 with intervening prose) must keep their numbers
+    /// across non-list paragraphs instead of resetting to "1." each time.
+    #[test]
+    fn write_ordered_list_continues_across_non_list_paragraphs() {
+        let mut doc = DocumentModel::new();
+        let body_id = doc.body_id().unwrap();
+
+        let mk_list_para = |doc: &mut DocumentModel, parent, idx, text: &str| {
+            let para_id = doc.next_id();
+            let mut para = Node::new(para_id, NodeType::Paragraph);
+            para.attributes.set(
+                AttributeKey::ListInfo,
+                AttributeValue::ListInfo(ListInfo {
+                    level: 1,
+                    num_format: ListFormat::Decimal,
+                    num_id: 7,
+                    start: None,
+                }),
+            );
+            doc.insert_node(parent, idx, para).unwrap();
+            let run_id = doc.next_id();
+            doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
+                .unwrap();
+            let t_id = doc.next_id();
+            doc.insert_node(run_id, 0, Node::text(t_id, text)).unwrap();
+        };
+        let mk_plain_para = |doc: &mut DocumentModel, parent, idx, text: &str| {
+            let para_id = doc.next_id();
+            doc.insert_node(parent, idx, Node::new(para_id, NodeType::Paragraph))
+                .unwrap();
+            let run_id = doc.next_id();
+            doc.insert_node(para_id, 0, Node::new(run_id, NodeType::Run))
+                .unwrap();
+            let t_id = doc.next_id();
+            doc.insert_node(run_id, 0, Node::text(t_id, text)).unwrap();
+        };
+
+        mk_list_para(&mut doc, body_id, 0, "Section A");
+        mk_plain_para(&mut doc, body_id, 1, "Prose between sections.");
+        mk_list_para(&mut doc, body_id, 2, "Section B");
+        mk_plain_para(&mut doc, body_id, 3, "More prose.");
+        mk_list_para(&mut doc, body_id, 4, "Section C");
+
+        let md = write(&doc);
+        assert!(md.contains("1. Section A"), "md:\n{md}");
+        assert!(md.contains("2. Section B"), "md:\n{md}");
+        assert!(md.contains("3. Section C"), "md:\n{md}");
     }
 
     #[test]
