@@ -46,6 +46,7 @@ pub fn read(input: &str) -> Result<DocumentModel, MdError> {
         table_alignments: Vec::new(),
         in_code_block: false,
         blockquote_depth: 0,
+        pending_image: None,
     };
 
     for event in parser {
@@ -166,6 +167,17 @@ struct ReadContext {
     table_alignments: Vec<CmAlignment>,
     in_code_block: bool,
     blockquote_depth: u32,
+    /// While processing a `Tag::Image`, the text events between Start
+    /// and End form the image's alt text. Captured here instead of
+    /// emitted as runs in the surrounding paragraph.
+    pending_image: Option<PendingImage>,
+}
+
+struct PendingImage {
+    parent_id: NodeId,
+    url: String,
+    title: String,
+    alt: String,
 }
 
 struct ListState {
@@ -274,25 +286,18 @@ fn process_event(
             Tag::Image {
                 dest_url, title, ..
             } => {
-                // Store image reference as attributes on a placeholder image node
+                // Defer creation until TagEnd::Image so we can attach
+                // the inner text events as the alt text. CommonMark
+                // emits image alt as nested text events between
+                // Tag::Image Start/End — not as the `title` attribute
+                // (`title` is the optional `"Title"` after the URL).
                 if let Some((parent_id, _)) = ctx.container_stack.last().copied() {
-                    let img_id = doc.next_id();
-                    let mut img = Node::new(img_id, NodeType::Image);
-                    img.attributes.set(
-                        AttributeKey::ImageAltText,
-                        AttributeValue::String(title.to_string()),
-                    );
-                    // Store source URL in a generic attribute
-                    img.attributes.set(
-                        AttributeKey::HyperlinkUrl,
-                        AttributeValue::String(dest_url.to_string()),
-                    );
-                    let child_idx = ctx.container_stack.last().map(|c| c.1).unwrap_or(0);
-                    doc.insert_node(parent_id, child_idx, img)
-                        .map_err(|e| MdError::Model(e.to_string()))?;
-                    if let Some(last) = ctx.container_stack.last_mut() {
-                        last.1 += 1;
-                    }
+                    ctx.pending_image = Some(PendingImage {
+                        parent_id,
+                        url: dest_url.to_string(),
+                        title: title.to_string(),
+                        alt: String::new(),
+                    });
                 }
             }
             Tag::List(first_item) => {
@@ -509,7 +514,32 @@ fn process_event(
                 ctx.link_url = None;
                 ctx.link_title = None;
             }
-            TagEnd::Image => {}
+            TagEnd::Image => {
+                if let Some(pending) = ctx.pending_image.take() {
+                    let img_id = doc.next_id();
+                    let mut img = Node::new(img_id, NodeType::Image);
+                    img.attributes.set(
+                        AttributeKey::ImageAltText,
+                        AttributeValue::String(pending.alt),
+                    );
+                    img.attributes.set(
+                        AttributeKey::HyperlinkUrl,
+                        AttributeValue::String(pending.url),
+                    );
+                    if !pending.title.is_empty() {
+                        img.attributes.set(
+                            AttributeKey::HyperlinkTooltip,
+                            AttributeValue::String(pending.title),
+                        );
+                    }
+                    let child_idx = ctx.container_stack.last().map(|c| c.1).unwrap_or(0);
+                    doc.insert_node(pending.parent_id, child_idx, img)
+                        .map_err(|e| MdError::Model(e.to_string()))?;
+                    if let Some(last) = ctx.container_stack.last_mut() {
+                        last.1 += 1;
+                    }
+                }
+            }
             TagEnd::List(_) => {
                 ctx.list_stack.pop();
             }
@@ -551,14 +581,22 @@ fn process_event(
         },
 
         Event::Text(text) => {
-            emit_text(doc, ctx, &text)?;
+            if let Some(pending) = ctx.pending_image.as_mut() {
+                pending.alt.push_str(&text);
+            } else {
+                emit_text(doc, ctx, &text)?;
+            }
         }
 
         Event::Html(html) | Event::InlineHtml(html) => {
             // Pass HTML through as literal text so it survives the
             // round-trip. We don't parse or render HTML structurally — by
             // CommonMark default it's an opaque pass-through.
-            emit_text(doc, ctx, &html)?;
+            if let Some(pending) = ctx.pending_image.as_mut() {
+                pending.alt.push_str(&html);
+            } else {
+                emit_text(doc, ctx, &html)?;
+            }
         }
 
         Event::TaskListMarker(checked) => {
@@ -754,6 +792,11 @@ fn install_default_styles(doc: &mut DocumentModel) {
         let mut attrs = AttributeMap::new().bold(true).font_size(size);
         attrs.set(AttributeKey::SpacingBefore, AttributeValue::Float(before));
         attrs.set(AttributeKey::SpacingAfter, AttributeValue::Float(after));
+        // Headings should stay with the following paragraph and never
+        // split across pages — otherwise the heading orphans at the
+        // bottom while the body slides to the next page.
+        attrs.set(AttributeKey::KeepWithNext, AttributeValue::Bool(true));
+        attrs.set(AttributeKey::KeepLinesTogether, AttributeValue::Bool(true));
         if lvl >= 5 {
             attrs = attrs.italic(true);
         }
@@ -783,6 +826,9 @@ fn install_default_styles(doc: &mut DocumentModel) {
         AttributeKey::LineSpacing,
         AttributeValue::LineSpacing(s1_model::LineSpacing::Single),
     );
+    // Don't split a code block across page boundaries — multi-line code
+    // is very hard to read with a page break in the middle.
+    cb_attrs.set(AttributeKey::KeepLinesTogether, AttributeValue::Bool(true));
     cb_attrs.set(
         AttributeKey::ParagraphBorders,
         AttributeValue::Borders(Borders {

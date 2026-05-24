@@ -404,7 +404,20 @@ fn write_paragraph(
                 }
             }
             NodeType::Image => {
-                write_image(doc, child_id, xml, image_rels);
+                let has_media = doc
+                    .node(child_id)
+                    .and_then(|n| n.attributes.get(&AttributeKey::ImageMediaId))
+                    .is_some();
+                if !has_media {
+                    // Markdown images come in as URL-only references —
+                    // the bytes aren't fetched. Emit a placeholder
+                    // hyperlink with the alt text so the URL and alt
+                    // both survive into DOCX (and the MD round-trip
+                    // can rebuild `[alt](url)`).
+                    write_image_placeholder_hyperlink(doc, child_id, xml, hyperlink_rels);
+                } else {
+                    write_image(doc, child_id, xml, image_rels);
+                }
                 i += 1;
             }
             NodeType::Field => {
@@ -995,6 +1008,47 @@ fn write_border_side(name: &str, side: &BorderSide, xml: &mut String) {
     let space = side.spacing as i64;
     xml.push_str(&format!(
         r#"<w:{name} w:val="{style}" w:sz="{sz}" w:space="{space}" w:color="{color}"/>"#
+    ));
+}
+
+/// Emit a placeholder hyperlink for an `Image` node that carries a URL
+/// but no embedded bytes (typically a Markdown `![alt](url)` where the
+/// reader didn't fetch the image data).
+///
+/// Without this, `write_image` returns early on the missing media id
+/// and the alt text + URL both vanish in DOCX export. Emitting a
+/// hyperlink with the alt text instead preserves the human-readable
+/// label and the link target, and lets a downstream MD round-trip
+/// rebuild a serviceable `[alt](url)` reference.
+fn write_image_placeholder_hyperlink(
+    doc: &DocumentModel,
+    image_id: NodeId,
+    xml: &mut String,
+    hyperlink_rels: &mut Vec<HyperlinkRelEntry>,
+) {
+    let image = match doc.node(image_id) {
+        Some(n) => n,
+        None => return,
+    };
+    let url = match image.attributes.get_string(&AttributeKey::HyperlinkUrl) {
+        Some(u) if !u.is_empty() => u.to_string(),
+        _ => return,
+    };
+    let alt = image
+        .attributes
+        .get_string(&AttributeKey::ImageAltText)
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let label = if alt.is_empty() { url.clone() } else { alt };
+
+    let rid = format!("rImgLink{}", hyperlink_rels.len() + 1);
+    hyperlink_rels.push(HyperlinkRelEntry {
+        rid: rid.clone(),
+        target: url,
+    });
+    xml.push_str(&format!(
+        r#"<w:hyperlink r:id="{rid}"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r></w:hyperlink>"#,
+        escape_xml(&label)
     ));
 }
 
