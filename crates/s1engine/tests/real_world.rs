@@ -1332,6 +1332,63 @@ fn md_table_export_has_visible_borders() {
     );
 }
 
+/// Regression: MD → DOCX must emit Word-friendly spacing — body line-height
+/// 1.15 with 8pt-after, plus explicit Heading1..6 style definitions so the
+/// converted file doesn't fall back to Word's outsized built-in heading
+/// styles. Without these defaults the result reads as "raw" output.
+#[test]
+fn md_export_has_word_friendly_spacing_defaults() {
+    use s1engine::{Engine, Format};
+
+    let md = "# Title\n\nBody paragraph.\n\n## Subhead\n\nMore body.\n";
+    let engine = Engine::new();
+    let doc = engine.open_as(md.as_bytes(), Format::Md).expect("parse md");
+    let docx = doc.export(Format::Docx).expect("export docx");
+
+    let pkg = s1_ooxml::Package::parse(&docx).expect("parse pkg");
+    let styles_xml = pkg
+        .parts
+        .get("word/styles.xml")
+        .and_then(|p| match &p.content {
+            s1_ooxml::PartContent::Xml(t) => t.write().ok(),
+            _ => None,
+        })
+        .and_then(|b| String::from_utf8(b).ok())
+        .expect("styles.xml");
+
+    // Body defaults — pPrDefault carries 1.15 line spacing (276/240).
+    assert!(
+        styles_xml.contains("<w:docDefaults>"),
+        "missing docDefaults: {styles_xml}"
+    );
+    assert!(
+        styles_xml.contains(r#"w:line="276""#),
+        "expected 1.15 line spacing (276 twips); got:\n{styles_xml}"
+    );
+    assert!(
+        styles_xml.contains(r#"w:after="160""#),
+        "expected 8pt-after on body (160 twips); got:\n{styles_xml}"
+    );
+
+    // Heading1 — bold + 18pt + 24pt-before + 6pt-after.
+    assert!(
+        styles_xml.contains(r#"w:styleId="Heading1""#),
+        "missing Heading1 style; got:\n{styles_xml}"
+    );
+    assert!(
+        styles_xml.contains(r#"<w:sz w:val="36"/>"#),
+        "Heading1 should be 18pt (36 half-points); got:\n{styles_xml}"
+    );
+    assert!(
+        styles_xml.contains(r#"w:before="480""#),
+        "Heading1 should carry 24pt-before (480 twips); got:\n{styles_xml}"
+    );
+    assert!(
+        styles_xml.contains(r#"w:styleId="Heading2""#),
+        "missing Heading2 style; got:\n{styles_xml}"
+    );
+}
+
 /// Diagnostic: dump the actual MD output of selected DOCX fixtures so we can
 /// eyeball list numbering, heading styles, and other formatting that the
 /// word-survival audit can't see. Ignored by default — run manually with

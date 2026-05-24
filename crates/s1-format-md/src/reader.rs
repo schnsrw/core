@@ -4,8 +4,8 @@
 
 use pulldown_cmark::{Alignment as CmAlignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use s1_model::{
-    Alignment, AttributeKey, AttributeValue, BorderSide, BorderStyle, Borders, Color,
-    DocumentModel, ListFormat, ListInfo, Node, NodeId, NodeType,
+    Alignment, AttributeKey, AttributeMap, AttributeValue, BorderSide, BorderStyle, Borders,
+    Color, DocumentModel, ListFormat, ListInfo, Node, NodeId, NodeType, Style, StyleType,
 };
 
 use crate::MdError;
@@ -13,6 +13,7 @@ use crate::MdError;
 /// Read a Markdown string into a [`DocumentModel`].
 pub fn read(input: &str) -> Result<DocumentModel, MdError> {
     let mut doc = DocumentModel::new();
+    install_default_styles(&mut doc);
     let body_id = doc
         .body_id()
         .ok_or_else(|| MdError::Model("no body".into()))?;
@@ -571,6 +572,54 @@ fn insert_node(
 ) -> Result<(), MdError> {
     doc.insert_node(parent_id, child_index, Node::new(node_id, node_type))
         .map_err(|e| MdError::Model(e.to_string()))
+}
+
+/// Stamp body defaults and Heading1..6 style definitions onto a fresh
+/// document so the resulting DOCX opens with Word-friendly spacing
+/// instead of falling back to Word's built-in `Heading 1` (which is
+/// huge) or to no spacing at all between paragraphs.
+///
+/// Spacing values follow the pandoc-style neutral defaults that most
+/// users expect from a "Markdown → Word" conversion: body 11pt with
+/// 8pt-after and 1.15 line spacing; headings bold, sized by level, with
+/// generous before-spacing that decreases with depth.
+fn install_default_styles(doc: &mut DocumentModel) {
+    {
+        let defaults = doc.doc_defaults_mut();
+        defaults.font_family.get_or_insert_with(|| "Calibri".into());
+        defaults.font_size.get_or_insert(11.0);
+        defaults.space_after.get_or_insert(8.0);
+        defaults.line_spacing_multiple.get_or_insert(1.15);
+    }
+
+    let mut normal = Style::new("Normal", "Normal", StyleType::Paragraph);
+    normal.is_default = true;
+    doc.set_style(normal);
+
+    // (level, font_size_pt, space_before_pt, space_after_pt)
+    let heading_spec: [(u8, f64, f64, f64); 6] = [
+        (1, 18.0, 24.0, 6.0),
+        (2, 15.0, 18.0, 6.0),
+        (3, 13.0, 12.0, 4.0),
+        (4, 12.0, 10.0, 4.0),
+        (5, 11.0, 8.0, 2.0),
+        (6, 11.0, 8.0, 2.0),
+    ];
+    for (lvl, size, before, after) in heading_spec {
+        let style_id = format!("Heading{lvl}");
+        let style_name = format!("heading {lvl}");
+        let mut s = Style::new(&style_id, &style_name, StyleType::Paragraph);
+        s.parent_id = Some("Normal".into());
+        s.next_style_id = Some("Normal".into());
+        let mut attrs = AttributeMap::new().bold(true).font_size(size);
+        attrs.set(AttributeKey::SpacingBefore, AttributeValue::Float(before));
+        attrs.set(AttributeKey::SpacingAfter, AttributeValue::Float(after));
+        if lvl >= 5 {
+            attrs = attrs.italic(true);
+        }
+        s.attributes = attrs;
+        doc.set_style(s);
+    }
 }
 
 /// Default border decoration applied to every Markdown table on the way
