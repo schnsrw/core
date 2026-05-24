@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **MD writer: ordered-list numbering continues across non-list
+  paragraphs.** Continuation-numbered DOCX lists (e.g. SDS section
+  headings 14, 15, 16 with intervening prose) used to collapse to
+  `1.` each time because the counter map was cleared on every
+  non-list paragraph. Counters now persist for the whole document;
+  explicit `info.start` still resets. (`crates/s1-format-md/src/writer.rs`)
+- **MD writer: detect headings via localized style names.** DOCX
+  written by non-English Word (German `Überschrift1`, French
+  `Titre1`, …) carries the canonical heading name in `w:name` but a
+  localized `w:styleId`. The writer now falls back to the style
+  table's name field; `Title` / `Subtitle` map to H1 / H2. Level
+  clamped to CommonMark's H1..H6.
+  (`crates/s1-format-md/src/writer.rs`)
+
+### Added
+
+- **Borders model gains `inside_h` / `inside_v`.** Table writers can
+  now emit `<w:insideH>` / `<w:insideV>` so cell-divider borders
+  actually render in Word. DOCX parser captures them too (was
+  previously dropped under a "skip for now" branch). Includes a new
+  `Default` impl so further fields can be added without breaking
+  existing construction sites. (`crates/s1-model/src/attributes.rs`,
+  `crates/s1-format-docx/src/{content_writer,property_parser}.rs`)
+- **MD → DOCX: default visible table borders.** GFM tables produced
+  invisible grids in Word; the MD reader now stamps a 0.5pt black
+  single-line border on all six edges of every table.
+  (`crates/s1-format-md/src/reader.rs`)
+- **MD → DOCX: Word-friendly spacing defaults.** docDefaults set to
+  11pt Calibri with 1.15 line spacing and 8pt-after; explicit
+  `Heading1..6` style definitions (bold; 18 → 11pt; decreasing
+  before/after spacing) so headings don't fall back to Word's
+  outsized built-ins. (`crates/s1-format-md/src/reader.rs`)
+- **MD → DOCX: content-sized table column widths.** Per-column max
+  character count distributes the page-body width (468pt = US Letter
+  with 1″ margins) proportionally, with a 40pt floor. `tblW` set to
+  `auto` so Word still autofits at render time (pandoc convention).
+  (`crates/s1-format-md/src/reader.rs`)
+- **Diagnostic test.** `docx_to_md_diagnostic_dump` (ignored by
+  default) prints the rendered Markdown for a handful of real DOCX
+  fixtures and an MD → DOCX → MD round-trip — useful when the audit
+  reports 96 % and you still need to see what's wrong.
+
+### Documentation
+
+- **`docs/fidelity.md`** gained a Markdown section that spells out
+  what `… → MD` drops (line spacing, paragraph spacing, cell
+  shading, font colours, custom styles, …) and what MD → DOCX
+  injects to keep the converted Word document looking native.
+
 ## [0.2.0] — 2026-05-23
 
 First release with the structured-model API surface. Highlights:

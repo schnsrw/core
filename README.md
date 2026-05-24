@@ -163,7 +163,14 @@ language, cell borders, column widths) all survives.
   output is equivalent.
 - **Markdown edge cases** — reference-style links flatten to inline, nested
   emphasis with arbitrary combinations may pick a different (but valid) marker
-  order.
+  order. CommonMark has no syntax for line spacing, paragraph spacing, cell
+  shading, custom paragraph styles or font colours — those drop on `… → MD`
+  by design. See [`docs/fidelity.md`](docs/fidelity.md#markdown) for the full
+  lossy contract.
+- **Markdown → DOCX** ships opinionated defaults (1.15 body line spacing,
+  bold `Heading1..6` with sensible before/after spacing, black single-line
+  table borders, content-sized column widths) so the converted file opens
+  in Word looking native rather than raw.
 
 ## Architecture
 

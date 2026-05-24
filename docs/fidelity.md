@@ -51,6 +51,44 @@ for the `v0.2.x` fidelity pass on the roadmap.
 - **OMML math** (`m:` namespace) — not parsed.
 - **Relative sizing** (`wp14:pctWidth`, `wp14:pctHeight`) — dropped.
 
+### Markdown
+
+CommonMark / GFM is a **deliberately small** target. Some Word-style
+formatting has no Markdown syntax to land on; the converter handles the
+drop predictably rather than inventing custom syntax.
+
+What collapses on `… → MD` (and therefore has nowhere to come back from
+on `MD → DOCX`):
+
+| Source feature | What happens |
+| :--- | :--- |
+| Line spacing (`w:spacing w:line`, `fo:line-height`) | Dropped. CommonMark has no line-height syntax. |
+| Paragraph spacing (`w:spacing w:before/after`) | Dropped. |
+| Table cell shading (`w:tcShd`, `fo:background-color`) | Dropped. |
+| Table cell borders, font color inside tables | Dropped. |
+| Run colors (`w:color`, `w:highlight`) outside code | Dropped. |
+| Page geometry, margins, columns | Dropped. |
+| Footnotes / endnotes (DOCX) | Reference text emitted inline as `[^label]` — not structured. |
+| Custom paragraph styles that aren't headings / quotes / code | Flatten to body text. |
+| Word's `Title` / `Subtitle` styles | Map to `# H1` / `## H2`. |
+| Localized DOCX heading style IDs (`Überschrift1`, `Titre1`, …) | Recognised via the style's `w:name`. |
+
+What the **MD → DOCX** path injects to keep the converted Word document
+looking native (none of these come from the Markdown source — they are
+opinionated defaults the converter applies):
+
+- Body line spacing 1.15 with 8pt-after and 11pt Calibri default.
+- `Heading1..6` style definitions (bold; 18 → 11pt; before-spacing
+  decreasing with depth). `Heading5/6` italicised.
+- Tables get a 0.5pt black single-line border on all six edges
+  (top/left/bottom/right + insideH + insideV).
+- Table column widths sized proportionally to per-column content
+  length; `tblW` set to `auto` so Word still autofits.
+
+If you need a *strict* "treat MD as text" conversion — bypassing the
+CommonMark parser entirely so consumers can ship their own renderer —
+see `Format::MdRaw` (planned).
+
 ### ODT
 
 - **Settings file** (`settings.xml`) — written but not always preserved
