@@ -1332,6 +1332,67 @@ fn md_table_export_has_visible_borders() {
     );
 }
 
+/// Regression: MD tables converted to DOCX must emit a `<w:tblGrid>`
+/// whose `<w:gridCol>` widths are proportional to per-column content
+/// length, so Word's autofit starts from a sensible layout instead of
+/// an all-equal grid. A column with much longer text gets a larger
+/// width than one with short text.
+#[test]
+fn md_table_export_has_content_sized_column_widths() {
+    use s1engine::{Engine, Format};
+
+    let md = "\
+| Short | A much longer column with substantial text inside |
+|-------|---------------------------------------------------|
+| a     | bb                                                 |
+";
+    let engine = Engine::new();
+    let doc = engine.open_as(md.as_bytes(), Format::Md).expect("parse md");
+    let docx = doc.export(Format::Docx).expect("export docx");
+
+    let pkg = s1_ooxml::Package::parse(&docx).expect("parse pkg");
+    let doc_xml = pkg
+        .parts
+        .get("word/document.xml")
+        .and_then(|p| match &p.content {
+            s1_ooxml::PartContent::Xml(t) => t.write().ok(),
+            _ => None,
+        })
+        .and_then(|b| String::from_utf8(b).ok())
+        .expect("document.xml");
+
+    // tblGrid is present with two columns.
+    let grid_start = doc_xml
+        .find("<w:tblGrid>")
+        .expect("tblGrid in document.xml");
+    let grid_end = doc_xml[grid_start..]
+        .find("</w:tblGrid>")
+        .map(|i| grid_start + i)
+        .expect("tblGrid close");
+    let grid = &doc_xml[grid_start..grid_end];
+
+    let widths: Vec<i64> = grid
+        .split(r#"<w:gridCol w:w=""#)
+        .skip(1)
+        .filter_map(|chunk| chunk.split('"').next()?.parse::<i64>().ok())
+        .collect();
+    assert_eq!(
+        widths.len(),
+        2,
+        "expected 2 gridCol entries; got {widths:?}"
+    );
+    assert!(
+        widths[1] > widths[0],
+        "the wider-content column should get more width; got {widths:?}"
+    );
+
+    // Table width is declared as auto (pandoc convention).
+    assert!(
+        doc_xml.contains(r#"<w:tblW w:w="0" w:type="auto"/>"#),
+        "expected tblW=auto on MD-sourced table; got:\n{doc_xml}"
+    );
+}
+
 /// Regression: MD → DOCX must emit Word-friendly spacing — body line-height
 /// 1.15 with 8pt-after, plus explicit Heading1..6 style definitions so the
 /// converted file doesn't fall back to Word's outsized built-in heading

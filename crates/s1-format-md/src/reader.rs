@@ -4,8 +4,8 @@
 
 use pulldown_cmark::{Alignment as CmAlignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use s1_model::{
-    Alignment, AttributeKey, AttributeMap, AttributeValue, BorderSide, BorderStyle, Borders,
-    Color, DocumentModel, ListFormat, ListInfo, Node, NodeId, NodeType, Style, StyleType,
+    Alignment, AttributeKey, AttributeMap, AttributeValue, BorderSide, BorderStyle, Borders, Color,
+    DocumentModel, ListFormat, ListInfo, Node, NodeId, NodeType, Style, StyleType,
 };
 
 use crate::MdError;
@@ -426,6 +426,9 @@ fn process_event(
                 ctx.container_stack.pop();
             }
             TagEnd::Table => {
+                if let Some(table_id) = ctx.table_id {
+                    apply_content_sized_table_widths(doc, table_id);
+                }
                 ctx.in_table = false;
                 ctx.table_id = None;
             }
@@ -620,6 +623,103 @@ fn install_default_styles(doc: &mut DocumentModel) {
         s.attributes = attrs;
         doc.set_style(s);
     }
+}
+
+/// Distribute the page-body width across a Markdown table's columns in
+/// proportion to the longest content found in each column. Word still
+/// auto-fits at render time, but the initial widths give it a sensible
+/// starting layout instead of all-equal columns.
+///
+/// Sets the table's `TableWidth` to `Auto` (pandoc convention) and
+/// stamps a `TableColumnWidths` string in points; the DOCX writer picks
+/// these up to emit `<w:tblGrid>` with proportional `<w:gridCol>` widths.
+fn apply_content_sized_table_widths(doc: &mut DocumentModel, table_id: NodeId) {
+    // Body width on US Letter with 1" margins = 6.5" = 468pt. Sum
+    // column widths to this so the table fits a default page.
+    const PAGE_BODY_PT: f64 = 468.0;
+    const MIN_COL_PT: f64 = 40.0;
+
+    let col_lengths = column_text_lengths(doc, table_id);
+    if col_lengths.is_empty() {
+        return;
+    }
+    let total: usize = col_lengths.iter().sum();
+    // Ensure every column gets a minimum width so a column of empty
+    // cells doesn't collapse to zero in Word.
+    let n = col_lengths.len() as f64;
+    let min_total = n * MIN_COL_PT;
+    let scale_pool = (PAGE_BODY_PT - min_total).max(0.0);
+    let weights: Vec<f64> = if total == 0 {
+        vec![1.0 / n; col_lengths.len()]
+    } else {
+        col_lengths
+            .iter()
+            .map(|&l| l as f64 / total as f64)
+            .collect()
+    };
+
+    let widths: Vec<String> = weights
+        .iter()
+        .map(|w| {
+            let pts = MIN_COL_PT + w * scale_pool;
+            format!("{pts:.1}pt")
+        })
+        .collect();
+    let widths_str = widths.join(",");
+
+    if let Some(table) = doc.node_mut(table_id) {
+        table.attributes.set(
+            AttributeKey::TableWidth,
+            AttributeValue::TableWidth(s1_model::TableWidth::Auto),
+        );
+        table.attributes.set(
+            AttributeKey::TableColumnWidths,
+            AttributeValue::String(widths_str),
+        );
+    }
+}
+
+/// Compute the maximum character-count seen in each column across all
+/// rows of a table. Returns one entry per column.
+fn column_text_lengths(doc: &DocumentModel, table_id: NodeId) -> Vec<usize> {
+    let table = match doc.node(table_id) {
+        Some(n) => n,
+        None => return Vec::new(),
+    };
+
+    let mut col_max: Vec<usize> = Vec::new();
+    for &row_id in &table.children {
+        let row = match doc.node(row_id) {
+            Some(n) if n.node_type == NodeType::TableRow => n,
+            _ => continue,
+        };
+        for (col, &cell_id) in row.children.iter().enumerate() {
+            if doc.node(cell_id).map(|n| n.node_type) != Some(NodeType::TableCell) {
+                continue;
+            }
+            let len = node_text_char_count(doc, cell_id);
+            if col >= col_max.len() {
+                col_max.resize(col + 1, 0);
+            }
+            if len > col_max[col] {
+                col_max[col] = len;
+            }
+        }
+    }
+    col_max
+}
+
+/// Recursive character count across all text descendants of a node.
+fn node_text_char_count(doc: &DocumentModel, node_id: NodeId) -> usize {
+    let node = match doc.node(node_id) {
+        Some(n) => n,
+        None => return 0,
+    };
+    let mut len = node.text_content.as_ref().map_or(0, |t| t.chars().count());
+    for &child in &node.children {
+        len += node_text_char_count(doc, child);
+    }
+    len
 }
 
 /// Default border decoration applied to every Markdown table on the way
