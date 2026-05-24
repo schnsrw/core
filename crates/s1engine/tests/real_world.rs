@@ -1332,6 +1332,58 @@ fn md_table_export_has_visible_borders() {
     );
 }
 
+/// Diagnostic: dump the actual MD output of selected DOCX fixtures so we can
+/// eyeball list numbering, heading styles, and other formatting that the
+/// word-survival audit can't see. Ignored by default — run manually with
+/// `cargo test … docx_to_md_diagnostic_dump -- --ignored --nocapture`.
+#[test]
+#[ignore = "diagnostic — run manually with --ignored to inspect output"]
+fn docx_to_md_diagnostic_dump() {
+    use s1engine::{Engine, Format};
+
+    let engine = Engine::new();
+    let fixtures = [
+        "demo.docx",
+        "example-with-image.docx",
+        "sds-real-world.docx",
+        "issue-387-font-theme-override.docx",
+    ];
+
+    // Also MD → DOCX → MD round-trip for the lists fixture, where any
+    // ordered-list regression will be obvious in the rendered output.
+    if let Ok(md_bytes) = std::fs::read(workspace_path("testdocs/md/samples/nested_lists.md")) {
+        if let Ok(doc) = engine.open_as(&md_bytes, Format::Md) {
+            if let Ok(docx) = doc.export(Format::Docx) {
+                if let Ok(doc2) = engine.open(&docx) {
+                    if let Ok(round) = doc2.export_string(Format::Md) {
+                        eprintln!("\n========== nested_lists.md → DOCX → MD ==========");
+                        eprintln!("{round}");
+                    }
+                }
+            }
+        }
+    }
+
+    for name in fixtures {
+        let path = workspace_path(&format!("testdocs/docx/eigenpal/{name}"));
+        let Ok(bytes) = std::fs::read(&path) else {
+            eprintln!("\n========== {name} (missing) ==========");
+            continue;
+        };
+        let Ok(doc) = engine.open(&bytes) else {
+            eprintln!("\n========== {name} (parse failed) ==========");
+            continue;
+        };
+        match doc.export_string(Format::Md) {
+            Ok(md) => {
+                eprintln!("\n========== {name} → MD ==========");
+                eprintln!("{md}");
+            }
+            Err(e) => eprintln!("\n========== {name} (export failed: {e}) =========="),
+        }
+    }
+}
+
 #[cfg(all(feature = "pdf", feature = "docx"))]
 #[test]
 fn embedded_fonts_load_into_db() {
